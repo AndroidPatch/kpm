@@ -56,26 +56,23 @@ static inline bool installHook()
         pr_info("PDBF: enabled !\n");
     } else {
         pr_info("PDBF: Always enabled !\n");
-        goto exit;
     }
-
     ret = true;
+
 exit:
     return ret;
 }
 
 static inline bool uninstallHook()
 {
-    bool ret = false;
     if (hook_success(policydb_write)) {
         unhook((void *)hook_original(policydb_write));
         hook_err(policydb_write) = HOOK_NOT_HOOK;
-        ret = true;
         pr_info("PDBF: disbaled !\n");
     } else {
         pr_info("PDBF: Always disabled !\n");
     }
-    return ret;
+    return true;
 }
 
 static inline void printInfo()
@@ -109,24 +106,18 @@ exit:
 
 static long selinux_policydb_fix_control0(const char *args, char *__user out_msg, int outlen)
 {
-    long rc = 0;
     if (args) {
         if (strncmp(args, "enable", 6) == 0) {
-            if (hfr_control(true)) {
-                writeOutMsg(out_msg, &outlen, "PDBF: enabled !");
-            } else
-                rc = 1;
+            writeOutMsg(out_msg, &outlen, hfr_control(true) ? "PDBF: enabled !" : "PDBF: enable fail !");
         } else if (strncmp(args, "disable", 7) == 0) {
-            if (hfr_control(false)) {
-                writeOutMsg(out_msg, &outlen, "PDBF: disbaled !");
-            } else
-                rc = 1;
+            writeOutMsg(out_msg, &outlen, hfr_control(false) ? "PDBF: disbaled !" : "PDBF: disbale fail !");
         } else {
             pr_info("PDBF: ctl error, args=%s\n", args);
-            rc = 1;
+            writeOutMsg(out_msg, &outlen, "PDBF: ctl error !");
+            return -1;
         }
     }
-    return rc;
+    return 0;
 }
 
 static long selinux_policydb_fix_exit(void *__user reserved)

@@ -63,26 +63,23 @@ static inline bool installHook()
         pr_info("HFR: enabled !\n");
     } else {
         pr_info("HFR: Always enabled !\n");
-        goto exit;
     }
-
     ret = true;
+
 exit:
     return ret;
 }
 
 static inline bool uninstallHook()
 {
-    bool ret = false;
     if (hook_success(do_filp_open)) {
         unhook((void *)hook_original(do_filp_open));
         hook_err(do_filp_open) = HOOK_NOT_HOOK;
-        ret = true;
         pr_info("HFR: disbaled !\n");
     } else {
         pr_info("HFR: Always disabled !\n");
     }
-    return ret;
+    return true;
 }
 
 static inline void printInfo()
@@ -116,24 +113,18 @@ exit:
 
 static long hosts_file_redirect_control0(const char *args, char *__user out_msg, int outlen)
 {
-    long rc = 0;
     if (args) {
         if (strncmp(args, "enable", 6) == 0) {
-            if (hfr_control(true)) {
-                writeOutMsg(out_msg, &outlen, "HFR: enabled !");
-            } else
-                rc = 1;
+            writeOutMsg(out_msg, &outlen, hfr_control(true) ? "HFR: enabled !" : "HFR: enable fail !");
         } else if (strncmp(args, "disable", 7) == 0) {
-            if (hfr_control(false)) {
-                writeOutMsg(out_msg, &outlen, "HFR: disbaled !");
-            } else
-                rc = 1;
+            writeOutMsg(out_msg, &outlen, hfr_control(false) ? "HFR: disbaled !" : "HFR: disbale fail !");
         } else {
             pr_info("HFR: ctl error, args=%s\n", args);
-            rc = 1;
+            writeOutMsg(out_msg, &outlen, "HFR: ctl error !");
+            return -1;
         }
     }
-    return rc;
+    return 0;
 }
 
 static long hosts_file_redirect_exit(void *__user reserved)
