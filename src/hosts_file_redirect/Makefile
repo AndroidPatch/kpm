@@ -1,4 +1,4 @@
-HFR_VERSION := 1.1.7
+HFR_VERSION := 1.1.8
 
 ifndef KP_DIR
     KP_DIR = ../..

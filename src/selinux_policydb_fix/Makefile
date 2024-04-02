@@ -1,4 +1,4 @@
-PDBF_VERSION := 1.0.5
+PDBF_VERSION := 1.0.6
 
 ifndef KP_DIR
     KP_DIR = ../..
