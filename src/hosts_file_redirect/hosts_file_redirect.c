@@ -4,17 +4,11 @@
  * Copyright (C) 2024 skkk. All Rights Reserved.
  */
 
-#include <asm/current.h>
-#include <kpmodule.h>
-#include <kputils.h>
 #include <linux/err.h>
+#include <linux/fs.h>
 #include <linux/kernel.h>
 #include <linux/printk.h>
-#include <linux/slab.h>
 #include <linux/string.h>
-#include <linux/uaccess.h>
-#include <linux/sched.h>
-#include <syscall.h>
 
 #include <kpm_utils.h>
 #include <kpm_hook_utils.h>

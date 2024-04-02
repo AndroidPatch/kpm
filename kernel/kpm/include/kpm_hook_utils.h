@@ -1,7 +1,9 @@
 #ifndef _KPM_HOOK_UTILS_H
 #define _KPM_HOOK_UTILS_H
 
+#include <hook.h>
 #include <linux/kallsyms.h>
+#include <linux/printk.h>
 
 #define hook_original(func) original_##func
 #define hook_replace(func) replace_##func

@@ -2,9 +2,9 @@
 #define _KPM_UTILS_H
 
 #include <asm/current.h>
+#include <kpmodule.h>
+#include <kputils.h>
 #include <linux/cred.h>
-#include <linux/err.h>
-#include <linux/fs.h>
 #include <linux/printk.h>
 #include <linux/sched.h>
 
