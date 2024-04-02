@@ -1,0 +1,84 @@
+name: Build CI
+
+on:
+  push:
+    paths:
+      - ".github/workflows/build-kpm.yml"
+      - "kernel/**"
+      - "src/**"
+  workflow_dispatch:
+    inputs:
+      release:
+        description: 'Push a new release'
+        required: false
+        default: 'false'
+      version:
+        description: 'release version'
+        required: false
+        default: '23040200'
+
+jobs:
+  Build-on-Ubuntu:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TZ: UTC-8
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+          fetch-depth: 1
+
+      - name: Update system and install dependencies
+        run: |
+          sudo apt update -y
+          sudo apt install llvm -y
+
+      - name: Build kpm
+        run: |
+          mkdir target
+
+          make -C src/hosts_file_redirect
+          mv src/hosts_file_redirect/*.kpm target
+
+          make -C src/selinux_policydb_fix
+          mv src/selinux_policydb_fix/*.kpm target
+
+      - name: Prepare artifact
+        if: success()
+        id: Artifact
+        run: |
+          hosts_file_redirect_name=`ls -d target/hosts_file_redirect*.kpm | awk -F '(/|.kpm)' '{print $2}'` && echo "hosts_file_redirect_name=$hosts_file_redirect_name" >> $GITHUB_OUTPUT
+
+          selinux_policydb_fix=`ls -d target/selinux_policydb_fix*.kpm | awk -F '(/|.kpm)' '{print $2}'` && echo "selinux_policydb_fix=$selinux_policydb_fix" >> $GITHUB_OUTPUT
+
+      - name: Upload hosts_file_redirect
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.Artifact.outputs.hosts_file_redirect_name }}
+          path: 'target/${{ steps.Artifact.outputs.hosts_file_redirect_name }}*'
+
+      - name: Upload selinux_policydb_fix
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.Artifact.outputs.selinux_policydb_fix }}
+          path: 'target/${{ steps.Artifact.outputs.selinux_policydb_fix }}*'
+
+      - name: Upload release
+        if: github.event.inputs.release == 'true' && success() && !cancelled()
+        uses: ncipollo/release-action@v1.14.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          name: ${{ github.event.inputs.version }}
+          tag: ${{ github.event.inputs.version }}
+          body: This release is built by github-action.
+          artifacts: "target/*.kpm"
+          allowUpdates: true
+          makeLatest: true
+          omitBodyDuringUpdate: true
+          replacesArtifacts: true
