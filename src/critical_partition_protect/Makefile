@@ -1,4 +1,4 @@
-ANTI_FORMAT_VERSION := 1.0
+ANTI_FORMAT_VERSION := 1.1
 
 ifndef KP_DIR
     KP_DIR = ../..
