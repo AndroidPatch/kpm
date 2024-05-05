@@ -41,44 +41,16 @@ jobs:
         run: |
           mkdir target
 
-          make -C src/hosts_file_redirect
-          mv src/hosts_file_redirect/*.kpm target
+          for dir in $(ls -d src/*/); do
+            make -C ${dir}
+            mv ${dir}*.kpm target
+          done
 
-          make -C src/selinux_policydb_fix
-          mv src/selinux_policydb_fix/*.kpm target
-
-          make -C src/critical_partition_protect
-          mv src/critical_partition_protect/*.kpm target
-      - name: Prepare artifact
-        if: success()
-        id: Artifact
-        run: |
-          hosts_file_redirect_name=`ls -d target/hosts_file_redirect*.kpm | awk -F '(/|.kpm)' '{print $2}'` && echo "hosts_file_redirect_name=$hosts_file_redirect_name" >> $GITHUB_OUTPUT
-
-          selinux_policydb_fix=`ls -d target/selinux_policydb_fix*.kpm | awk -F '(/|.kpm)' '{print $2}'` && echo "selinux_policydb_fix=$selinux_policydb_fix" >> $GITHUB_OUTPUT
-
-          critical_partition_protect=`ls -d target/critical_partition_protect*.kpm | awk -F '(/|.kpm)' '{print $2}'` && echo "critical_partition_protect=$critical_partition_protect" >> $GITHUB_OUTPUT
-
-      - name: Upload hosts_file_redirect
+      - name: Upload artifact
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.Artifact.outputs.hosts_file_redirect_name }}
-          path: 'target/${{ steps.Artifact.outputs.hosts_file_redirect_name }}*'
-
-      - name: Upload selinux_policydb_fix
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ steps.Artifact.outputs.selinux_policydb_fix }}
-          path: 'target/${{ steps.Artifact.outputs.selinux_policydb_fix }}*'
-
-      - name: Upload critical_partition_protect
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ steps.Artifact.outputs.critical_partition_protect }}
-          path: 'target/${{ steps.Artifact.outputs.critical_partition_protect }}*'
+          path: target
 
       - name: Upload release
         if: github.event.inputs.release == 'true' && success() && !cancelled()
