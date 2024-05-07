@@ -33,7 +33,7 @@ hook_func_no_info(do_filp_open);
 static struct file *hook_replace(do_filp_open)(int dfd, struct filename *pathname, const struct open_flags *op)
 {
     struct file *filp = hook_call_backup(do_filp_open, dfd, pathname, op);
-    if (unlikely(!IS_ERR(filp))) {
+    if (likely(!IS_ERR(filp))) {
         char buf[PATH_MAX];
         memset(&buf, 0, PATH_MAX);
         char *currPath = skfunc(d_path)(&filp->f_path, buf, PATH_MAX);
