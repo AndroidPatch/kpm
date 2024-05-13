@@ -220,6 +220,7 @@ static void binder_proc_transaction_before(hook_fargs3_t* args, void* udata) {
     struct binder_proc* target_proc = (struct binder_proc*)args->arg1;
 
     if (!t->from) { // oneway=1
+#ifndef QUIET
         struct binder_alloc* target_alloc = (struct binder_alloc*)((uintptr_t)target_proc + binder_proc_alloc_offset);
         size_t free_async_space = *(size_t*)((uintptr_t)target_alloc + binder_alloc_free_async_space_offset);
         if (free_async_space < REKERNEL_WARN_AHEAD_SPACE
@@ -232,9 +233,9 @@ static void binder_proc_transaction_before(hook_fargs3_t* args, void* udata) {
 #endif /* DEBUG */
             send_netlink_message(binder_kmsg, strlen(binder_kmsg));
         }
+#endif /* QUIET */
     } else {
         struct binder_proc* proc = t->from->proc;
-
         if (proc
             && proc->tsk
             && target_proc->tsk

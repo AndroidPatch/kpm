@@ -8,7 +8,6 @@
 
 #include <hook.h>
 #include <ksyms.h>
-#include <stdarg.h>
 #include <linux/cred.h>
 #include <linux/sched.h>
 #include <uapi/asm-generic/errno.h>
@@ -20,8 +19,6 @@
 
 typedef uint32_t inst_type_t;
 typedef uint32_t inst_mask_t;
-
-struct tracepoint;
 
 #define INST_ADD_64 0x91000000u
 #define INST_ADD_64_Rn_X0 0x91000000u
@@ -103,10 +100,8 @@ struct tracepoint;
 
 #define task_uid(task) task_real_uid(task)
   // ({                                                                                               \
-  //   rcu_read_lock();                                                                               \
   //   struct cred __rcu *cred = *(struct cred **)((uintptr_t)task + task_struct_offset.cred_offset); \
   //   kuid_t ___val = *(kuid_t *)((uintptr_t)cred + cred_offset.uid_offset);                         \
-  //   rcu_read_unlock();                                                                             \
   //   ___val;                                                                                        \
   // })
 
@@ -117,34 +112,6 @@ struct tracepoint;
     ___val;                                                                                             \
   })
 
-extern void kfunc_def(_binder_inner_proc_lock)(struct binder_proc* proc, int line);
-static inline void binder_inner_proc_lock(struct binder_proc* proc)
-{
-  kfunc_call(_binder_inner_proc_lock, proc, __LINE__);
-  kfunc_not_found();
-}
-
-extern void kfunc_def(_binder_inner_proc_unlock)(struct binder_proc* proc, int line);
-static inline void binder_inner_proc_unlock(struct binder_proc* proc)
-{
-  kfunc_call(_binder_inner_proc_unlock, proc, __LINE__);
-  kfunc_not_found();
-}
-
-extern void kfunc_def(_binder_node_inner_lock)(struct binder_node* node, int line);
-static inline void binder_node_inner_lock(struct binder_node* node)
-{
-  kfunc_call(_binder_node_inner_lock, node, __LINE__);
-  kfunc_not_found();
-}
-
-extern void kfunc_def(_binder_node_inner_unlock)(struct binder_node* node, int line);
-static inline void binder_node_inner_unlock(struct binder_node* node)
-{
-  kfunc_call(_binder_node_inner_unlock, node, __LINE__);
-  kfunc_not_found();
-}
-
 extern bool kfunc_def(freezing_slow_path)(struct task_struct* p);
 static inline bool freezing_slow_path(struct task_struct* p)
 {
@@ -152,6 +119,7 @@ static inline bool freezing_slow_path(struct task_struct* p)
   kfunc_not_found();
   return false;
 }
+
 extern bool kfunc_def(cgroup_freezing)(struct task_struct* task);
 static inline bool cgroup_freezing(struct task_struct* task)
 {
@@ -167,81 +135,50 @@ static inline struct sk_buff* alloc_skb(unsigned int size, gfp_t priority)
   kfunc_not_found();
   return NULL;
 }
-/**
- * nlmsg_msg_size - length of netlink message not including padding
- * @payload: length of message payload
- */
+
 static inline int nlmsg_msg_size(int payload)
 {
   return NLMSG_HDRLEN + payload;
 }
-/**
- * nlmsg_total_size - length of netlink message including padding
- * @payload: length of message payload
- */
+
 static inline int nlmsg_total_size(int payload)
 {
   return NLMSG_ALIGN(nlmsg_msg_size(payload));
 }
-/**
- * nlmsg_data - head of message payload
- * @nlh: netlink message header
- */
+
 static inline void* nlmsg_data(const struct nlmsghdr* nlh)
 {
   return (unsigned char*)nlh + NLMSG_HDRLEN;
 }
-/**
- * nlmsg_new - Allocate a new netlink message
- * @payload: size of the message payload
- * @flags: the type of memory to allocate.
- *
- * Use NLMSG_DEFAULT_SIZE if the size of the payload isn't known
- * and a good default is needed.
- */
+
 static inline struct sk_buff* nlmsg_new(size_t payload, gfp_t flags)
 {
   return alloc_skb(nlmsg_total_size(payload), flags);
 }
+
 extern struct nlmsghdr* kfunc_def(__nlmsg_put)(struct sk_buff* skb, u32 portid, u32 seq, int type, int len, int flags);
-/**
- * nlmsg_put - Add a new netlink message to an skb
- * @skb: socket buffer to store message in
- * @portid: netlink PORTID of requesting application
- * @seq: sequence number of message
- * @type: message type
- * @payload: length of message payload
- * @flags: message flags
- *
- * Returns NULL if the tailroom of the skb is insufficient to store
- * the message header and payload.
- */
 static inline struct nlmsghdr* nlmsg_put(struct sk_buff* skb, u32 portid, u32 seq, int type, int payload, int flags)
 {
-  // if (unlikely(skb_tailroom(skb) < nlmsg_total_size(payload)))
-  // return NULL;
-
   kfunc_call(__nlmsg_put, skb, portid, seq, type, payload, flags);
   kfunc_not_found();
   return NULL;
 }
+
 extern void kfunc_def(kfree_skb)(struct sk_buff* skb);
-/**
- * nlmsg_free - free a netlink message
- * @skb: socket buffer of netlink message
- */
 static inline void nlmsg_free(struct sk_buff* skb)
 {
   kfunc_call(kfree_skb, skb);
   kfunc_not_found();
 }
+
 extern int kfunc_def(netlink_unicast)(struct sock* ssk, struct sk_buff* skb, u32 portid, int nonblock);
 static inline int netlink_unicast(struct sock* ssk, struct sk_buff* skb, u32 portid, int nonblock)
 {
   kfunc_call(netlink_unicast, ssk, skb, portid, nonblock);
   kfunc_not_found();
-  return -1;
+  return -ESRCH;
 }
+
 extern struct sock* kfunc_def(__netlink_kernel_create)(struct net* net, int unit, struct module* module, struct netlink_kernel_cfg* cfg);
 static inline struct sock* netlink_kernel_create(struct net* net, int unit, struct netlink_kernel_cfg* cfg)
 {
@@ -249,6 +186,7 @@ static inline struct sock* netlink_kernel_create(struct net* net, int unit, stru
   kfunc_not_found();
   return NULL;
 }
+
 extern void kfunc_def(netlink_kernel_release)(struct sock* sk);
 static inline void netlink_kernel_release(struct sock* sk)
 {
@@ -263,6 +201,7 @@ static inline struct proc_dir_entry* proc_mkdir(const char* name, struct proc_di
   kfunc_not_found();
   return NULL;
 }
+
 extern struct proc_dir_entry* kfunc_def(proc_create_data)(const char* name, umode_t mode, struct proc_dir_entry* parent, const struct file_operations* proc_fops, void* data);
 static inline struct proc_dir_entry* proc_create(const char* name, umode_t mode, struct proc_dir_entry* parent, const struct file_operations* proc_fops)
 {
@@ -270,6 +209,7 @@ static inline struct proc_dir_entry* proc_create(const char* name, umode_t mode,
   kfunc_not_found();
   return NULL;
 }
+
 extern void kfunc_def(proc_remove)(struct proc_dir_entry* de);
 static inline void proc_remove(struct proc_dir_entry* de)
 {
@@ -277,24 +217,6 @@ static inline void proc_remove(struct proc_dir_entry* de)
   kfunc_not_found();
 }
 
-// extern ssize_t kfunc_def(seq_read)(struct file* file, char __user* buf, size_t size, loff_t* ppos);
-// static inline ssize_t seq_read(struct file* file, char __user* buf, size_t size, loff_t* ppos) {
-//   kfunc_call(seq_read, file, buf, size, ppos);
-//   kfunc_not_found();
-//   return -ESRCH;
-// }
-// extern loff_t kfunc_def(seq_lseek)(struct file* file, loff_t offset, int whence);
-// static inline loff_t seq_lseek(struct file* file, loff_t offset, int whence) {
-//   kfunc_call(seq_lseek, file, offset, whence);
-//   kfunc_not_found();
-//   return -ESRCH;
-// }
-// extern int kfunc_def(seq_write)(struct seq_file* seq, const void* data, size_t len);
-// static inline int seq_write(struct seq_file* seq, const void* data, size_t len) {
-//   kfunc_call(seq_write, seq, data, len);
-//   kfunc_not_found();
-//   return -ESRCH;
-// }
 extern void kfunc_def(seq_printf)(struct seq_file* m, const char* f, ...);
 static inline void seq_printf(struct seq_file* m, const char* f, ...) {
   va_list args;
@@ -302,31 +224,13 @@ static inline void seq_printf(struct seq_file* m, const char* f, ...) {
   kfunc(seq_printf)(m, f, args);
   va_end(args);
 }
+
 extern int kfunc_def(single_open)(struct file* file, int (*show)(struct seq_file*, void*), void* data);
 static inline int single_open(struct file* file, int (*show)(struct seq_file*, void*), void* data) {
   kfunc_call(single_open, file, show, data);
   kfunc_not_found();
   return -ESRCH;
 }
-// extern int kfunc_def(single_release)(struct inode* inode, struct file* file);
-// static inline int single_release(struct inode* inode, struct file* file) {
-//   kfunc_call(single_release, inode, file);
-//   kfunc_not_found();
-//   return -ESRCH;
-// }
 
-extern int kfunc_def(tracepoint_probe_register)(struct tracepoint* tp, void* probe, void* data);
-static inline int tracepoint_probe_register(struct tracepoint* tp, void* probe, void* data) {
-  kfunc_call(tracepoint_probe_register, tp, probe, data);
-  kfunc_not_found();
-  return -ESRCH;
-}
-
-extern int kfunc_def(tracepoint_probe_unregister)(struct tracepoint* tp, void* probe, void* data);
-static inline int tracepoint_probe_unregister(struct tracepoint* tp, void* probe, void* data) {
-  kfunc_call(tracepoint_probe_unregister, tp, probe, data);
-  kfunc_not_found();
-  return -ESRCH;
-}
 
 #endif /* __RE_UTILS_H */
