@@ -36,6 +36,7 @@ KPM_DESCRIPTION("Re:Kernel, support 4.4, 4.9, 4.14, 4.19, 5.4, 5.10, 5.15");
 #define REKERNEL_PACKET_SIZE 128
 #define REKERNEL_MIN_USERAPP_UID 10000
 #define REKERNEL_MAX_SYSTEM_UID 2000
+#define REKERNEL_WARN_AHEAD_MSGS 3
 #define REKERNEL_RESERVE_ORDER 17
 #define REKERNEL_WARN_AHEAD_SPACE (1 << REKERNEL_RESERVE_ORDER)
 
@@ -47,6 +48,9 @@ static struct file* (*do_filp_open)(int dfd, struct filename* pathname, const st
 // rcu_read_lock && rcu_read_unlock
 void kfunc_def(__rcu_read_lock)(void);
 void kfunc_def(__rcu_read_unlock)(void);
+// binder_inner_proc_lock && binder_inner_proc_unlock
+void kfunc_def(_binder_inner_proc_lock)(struct binder_proc* proc, int line);
+void kfunc_def(_binder_inner_proc_unlock)(struct binder_proc* proc, int line);
 // pid
 struct pid* kfunc_def(get_task_pid)(struct task_struct* task, enum pid_type type);
 pid_t kfunc_def(pid_vnr)(struct pid* pid);
@@ -66,25 +70,22 @@ void kfunc_def(netlink_kernel_release)(struct sock* sk);
 struct proc_dir_entry* kfunc_def(proc_mkdir)(const char* name, struct proc_dir_entry* parent);
 struct proc_dir_entry* kfunc_def(proc_create_data)(const char* name, umode_t mode, struct proc_dir_entry* parent, const struct file_operations* proc_fops, void* data);
 void kfunc_def(proc_remove)(struct proc_dir_entry* de);
-#ifndef QUIET
 // hook binder_alloc_new_buf_locked
 static struct binder_buffer* (*binder_alloc_new_buf_locked)(struct binder_alloc* alloc, size_t data_size, size_t offsets_size, size_t extra_buffers_size, int is_async, int pid);
-#endif /* QUIET */
 // hook binder_transaction
 static struct binder_node* (*binder_get_node_from_ref)(struct binder_proc* proc, u32 desc, bool need_strong_ref, struct binder_ref_data* rdata);
+static void (*binder_dec_node_tmpref)(struct binder_node* node);
 static int (*security_binder_transaction)(struct task_struct* from, struct task_struct* to);
 static void (*binder_transaction)(struct binder_proc* proc, struct binder_thread* thread, struct binder_transaction_data* tr, int reply, binder_size_t extra_buffers_size);
 // hook do_send_sig_info
 static int (*do_send_sig_info)(int sig, struct siginfo* info, struct task_struct* p, enum pid_type type);
 
-static uint64_t task_struct_frozen_offset = UZERO, task_struct_css_set_offset = UZERO,
-binder_proc_context_offset = UZERO,
-#ifndef QUIET
-binder_proc_binder_alloc_offset = UZERO,
+static uint64_t task_struct_flags_offset = UZERO, task_struct_frozen_offset = UZERO, task_struct_css_set_offset = UZERO,
+binder_proc_context_offset = UZERO, binder_proc_binder_alloc_offset = UZERO,
 binder_alloc_vma_offset = UZERO, binder_alloc_free_async_space_offset = UZERO, binder_alloc_pid_offset = UZERO,
-#endif /* QUIET */
 css_set_dfl_cgrp_offset = UZERO,
 cgroup_flags_offset = UZERO,
+task_struct_frozen_bit = UZERO,
 oneway = UZERO;
 
 static struct sock* rekernel_netlink;
@@ -109,7 +110,8 @@ static inline bool cgroup_task_frozen(struct task_struct* task)
     if (task_struct_frozen_offset == UZERO) {
         return ret;
     }
-    ret = *(bool*)((uintptr_t)task + task_struct_frozen_offset);
+    unsigned int frozen = *(unsigned int*)((uintptr_t)task + task_struct_frozen_offset);
+    ret = bit(frozen, task_struct_frozen_bit);
     return ret;
 }
 static inline bool cgroup_task_freeze(struct task_struct* task)
@@ -118,7 +120,7 @@ static inline bool cgroup_task_freeze(struct task_struct* task)
     if (task_struct_css_set_offset == UZERO || css_set_dfl_cgrp_offset == UZERO || cgroup_flags_offset == UZERO) {
         return ret;
     }
-    unsigned int task_flags = *(unsigned int*)((uintptr_t)task + task_struct_offset.stack_offset + 0xC);
+    unsigned int task_flags = *(unsigned int*)((uintptr_t)task + task_struct_flags_offset);
     if (task_flags & PF_KTHREAD) {
         return ret;
     }
@@ -133,7 +135,7 @@ static inline bool cgroup_task_freeze(struct task_struct* task)
 }
 static inline bool frozen(struct task_struct* p)
 {
-    unsigned int flags = *(unsigned int*)((uintptr_t)p + task_struct_offset.stack_offset + 0xC);
+    unsigned int flags = *(unsigned int*)((uintptr_t)p + task_struct_flags_offset);
     return flags & PF_FROZEN;
 }
 static inline bool freezing(struct task_struct* p)
@@ -219,17 +221,15 @@ static void security_binder_transaction_before(hook_fargs2_t* args, void* udata)
 #endif /* DEBUG */
         send_netlink_message(binder_kmsg, strlen(binder_kmsg));
     }
-
 }
 
-#ifndef QUIET
 static void binder_alloc_new_buf_locked_before(hook_fargs6_t* args, void* udata)
 {
     struct binder_alloc* alloc = (struct binder_alloc*)args->arg0;
-    size_t data_size = args->arg1;
-    size_t offsets_size = args->arg2;
-    size_t extra_buffers_size = args->arg3;
-    int is_async = args->arg4;
+    size_t data_size = (size_t)args->arg1;
+    size_t offsets_size = (size_t)args->arg2;
+    size_t extra_buffers_size = (size_t)args->arg3;
+    int is_async = (int)args->arg4;
     // 计算 free_async_space_offset
     if (binder_alloc_free_async_space_offset == UZERO) {
         binder_alloc_free_async_space_offset = IZERO;
@@ -278,7 +278,7 @@ static void binder_alloc_new_buf_locked_before(hook_fargs6_t* args, void* udata)
     }
     size_t free_async_space = *(size_t*)((uintptr_t)alloc + binder_alloc_free_async_space_offset);
     if (is_async
-        && (free_async_space < 3 * (size + sizeof(struct binder_buffer))
+        && (free_async_space < REKERNEL_WARN_AHEAD_MSGS * (size + sizeof(struct binder_buffer))
             || (free_async_space < REKERNEL_WARN_AHEAD_SPACE))) {
         struct binder_proc* target_proc = *(struct binder_proc**)((uintptr_t)alloc - binder_proc_binder_alloc_offset);
         if (target_proc
@@ -293,7 +293,6 @@ static void binder_alloc_new_buf_locked_before(hook_fargs6_t* args, void* udata)
         }
     }
 }
-#endif /* QUIET */
 
 static void binder_transaction_before(hook_fargs5_t* args, void* udata)
 {
@@ -305,12 +304,15 @@ static void binder_transaction_before(hook_fargs5_t* args, void* udata)
     struct binder_proc* target_proc = NULL;
     struct binder_node* target_node = NULL;
     if (reply) {
+        binder_inner_proc_lock(proc);
         struct binder_transaction* in_reply_to = thread->transaction_stack;
         if (in_reply_to == NULL || in_reply_to->to_thread != thread) {
+            binder_inner_proc_unlock(proc);
             return;
         }
         struct binder_thread* target_thread = in_reply_to->from;
         if (target_thread == NULL || target_thread->transaction_stack != in_reply_to) {
+            binder_inner_proc_unlock(proc);
             return;
         }
         target_proc = target_thread->proc;
@@ -326,8 +328,11 @@ static void binder_transaction_before(hook_fargs5_t* args, void* udata)
 #ifdef DEBUG
             printk("re_kernel: %s\n", binder_kmsg);
 #endif /* DEBUG */
+            binder_inner_proc_unlock(proc);
             send_netlink_message(binder_kmsg, strlen(binder_kmsg));
+            return;
         }
+        binder_inner_proc_unlock(proc);
     } else {
         if (binder_get_node_from_ref) {
             if (tr->target.handle) {
@@ -387,9 +392,7 @@ static long start_hook()
     if (security_binder_transaction) {
         hook_func(security_binder_transaction, 2, security_binder_transaction_before, 0, 0);
     }
-#ifndef QUIET
     hook_func(binder_alloc_new_buf_locked, 6, binder_alloc_new_buf_locked_before, 0, 0);
-#endif /* QUIET */
     hook_func(binder_transaction, 5, binder_transaction_before, 0, 0);
     hook_func(do_send_sig_info, 4, do_send_sig_info_before, 0, 0);
     return 0;
@@ -452,7 +455,7 @@ static long calculate_offsets() {
                 task_struct_css_set_offset = sign64_extend((imm12), 16u);
             }
             cgroup_exit_count = 1;
-        } else if ((cgroup_exit_src[i] & MASK_TBNZ_5) == INST_TBNZ_5) {
+        } else if ((cgroup_exit_src[i] & MASK_TBNZ) == INST_TBNZ) {
             cgroup_exit_start = true;
         }
     }
@@ -466,16 +469,34 @@ static long calculate_offsets() {
             break;
         } else if ((recalc_sigpending_and_wake_src[i] & MASK_TBZ) == INST_TBZ || (recalc_sigpending_and_wake_src[i] & MASK_TBNZ) == INST_TBNZ) {
             if ((recalc_sigpending_and_wake_src[i - 1] & MASK_LDRB) == INST_LDRB) {
+                task_struct_frozen_bit = bits32(recalc_sigpending_and_wake_src[i], 23, 19);
                 uint64_t imm12 = bits32(recalc_sigpending_and_wake_src[i - 1], 21, 10);
                 task_struct_frozen_offset = sign64_extend((imm12), 16u);
                 break;
             } else if ((recalc_sigpending_and_wake_src[i - 1] & MASK_LDRH) == INST_LDRH) {
+                task_struct_frozen_bit = bits32(recalc_sigpending_and_wake_src[i], 23, 19);
                 uint64_t imm12 = bits32(recalc_sigpending_and_wake_src[i - 1], 21, 10);
                 task_struct_frozen_offset = sign64_extend((imm12 << 1u), 16u);
                 break;
             }
         }
     }
+
+    // 获取 task->flags
+    uint32_t* freezing_slow_path_src = (uint32_t*)kfunc(freezing_slow_path);
+    for (u32 i = 0; i < 0x20; i++) {
+        if (freezing_slow_path_src[i] == ARM64_RET) {
+            break;
+        } else if ((freezing_slow_path_src[i] & MASK_LDR_64_X0) == INST_LDR_64_X0) {
+            uint64_t imm12 = bits32(freezing_slow_path_src[i], 21, 10);
+            task_struct_flags_offset = sign64_extend((imm12 << 0b11u), 16u);
+            break;
+        }
+    }
+    if (task_struct_flags_offset == UZERO) {
+        return -11;
+    }
+
     return 0;
 }
 
@@ -484,6 +505,8 @@ static long inline_hook_init(const char* args, const char* event, void* __user r
     lookup_name(do_filp_open);
     kfunc_lookup_name(__rcu_read_lock);
     kfunc_lookup_name(__rcu_read_unlock);
+    kfunc_lookup_name(_binder_inner_proc_lock);
+    kfunc_lookup_name(_binder_inner_proc_unlock);
     kfunc_lookup_name(get_task_pid);
     kfunc_lookup_name(pid_vnr);
 
@@ -500,7 +523,6 @@ static long inline_hook_init(const char* args, const char* event, void* __user r
     kfunc_lookup_name(proc_create_data);
     kfunc_lookup_name(proc_remove);
 
-#ifndef QUIET
     // 兼容 4.9
     binder_alloc_new_buf_locked = (typeof(binder_alloc_new_buf_locked))kallsyms_lookup_name("binder_alloc_new_buf_locked");
     if (binder_alloc_new_buf_locked) {
@@ -513,7 +535,6 @@ static long inline_hook_init(const char* args, const char* event, void* __user r
             return -21;
         }
     }
-#endif /* QUIET */
     // 兼容 4.4
     binder_get_node_from_ref = (typeof(binder_get_node_from_ref))kallsyms_lookup_name("binder_get_node_from_ref");
     if (binder_get_node_from_ref) {
@@ -526,10 +547,15 @@ static long inline_hook_init(const char* args, const char* event, void* __user r
             return -21;
         }
     }
+
+    lookup_name(binder_dec_node_tmpref);
     lookup_name(binder_transaction);
     lookup_name(do_send_sig_info);
 
-    calculate_offsets();
+    int rc = calculate_offsets();
+    if (rc < 0) {
+        return rc;
+    }
 
     char load_file[] = "load-file";
     if (event && !memcmp(event, load_file, sizeof(load_file))) {
@@ -544,23 +570,10 @@ static long inline_hook_init(const char* args, const char* event, void* __user r
 static long inline_hook_control0(const char* ctl_args, char* __user out_msg, int outlen)
 {
     char msg[64];
-
-#ifndef QUIET
-    if (binder_get_node_from_ref) {
-        snprintf(msg, sizeof(msg), "c_p=0x%llx, f_p=0x%llx, b_p=0x%llx", binder_proc_context_offset, binder_alloc_free_async_space_offset, binder_proc_binder_alloc_offset);
-    } else {
-        snprintf(msg, sizeof(msg), "f_p=0x%llx, b_p=0x%llx", binder_alloc_free_async_space_offset, binder_proc_binder_alloc_offset);
-    }
-#else /* QUIET */
-    if (binder_get_node_from_ref) {
-        snprintf(msg, sizeof(msg), "c_p=0x%llx", binder_proc_context_offset);
-    } else {
-        snprintf(msg, sizeof(msg), "_(._.)_");
-    }
-#endif /* QUIET */
+    snprintf(msg, sizeof(msg), "f_p=0x%llx, b_p=0x%llx", binder_alloc_free_async_space_offset, binder_proc_binder_alloc_offset);
     compat_copy_to_user(out_msg, msg, sizeof(msg));
     return 0;
-    }
+}
 
 static long inline_hook_exit(void* __user reserved)
 {
@@ -571,9 +584,7 @@ static long inline_hook_exit(void* __user reserved)
         proc_remove(rekernel_dir);
     }
     unhook_func(security_binder_transaction);
-#ifndef QUIET
     unhook_func(binder_alloc_new_buf_locked);
-#endif /* QUIET */
     unhook_func(binder_transaction);
     unhook_func(do_send_sig_info);
 

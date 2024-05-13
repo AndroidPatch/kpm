@@ -547,6 +547,9 @@ typedef struct kernel_siginfo {
 typedef struct refcount_struct {
     atomic_t refs;
 } refcount_t;
+
+// include/linux/sched.h
+
 struct task_struct {
     unsigned int			__state;
     // unknow
