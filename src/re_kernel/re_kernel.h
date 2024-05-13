@@ -2,10 +2,11 @@
 #define __RE_KERNEL_H
 
 #include <ktypes.h>
+#include <linux/include/linux/export.h>
 
-#define THIS_MODULE ((struct module *)0)
-#define ALIGN_MASK(x, mask) (((x) + (mask)) & ~(mask))
-#define ALIGN(x, a) ALIGN_MASK(x, (typeof(x))(a)-1)
+#define __ALIGN_KERNEL(x, a) __ALIGN_KERNEL_MASK(x, (typeof(x))(a)-1)
+#define __ALIGN_KERNEL_MASK(x, mask) (((x) + (mask)) & ~(mask))
+#define ALIGN(x, a) __ALIGN_KERNEL((x), (a))
 #define BIT_WORD(nr) ((nr) / BITS_PER_LONG)
 
 struct binder_alloc;
@@ -13,7 +14,7 @@ struct binder_alloc;
 // uapi/linux/android/binder.h
 typedef __u64 binder_size_t;
 typedef __u64 binder_uintptr_t;
-#define	rb_entry(ptr, type, member) container_of(ptr, type, member)
+#define rb_entry(ptr, type, member) container_of(ptr, type, member)
 
 enum transaction_flags {
     TF_ONE_WAY = 0x01,     /* this is a one-way call: async, no return */
@@ -58,6 +59,13 @@ struct binder_transaction_data {
 };
 
 // android/binder.c
+typedef atomic_t atomic_long_t;
+struct mutex {
+    atomic_long_t owner;
+    spinlock_t wait_lock;
+    // unknow
+};
+
 struct siginfo;
 
 struct rb_node {
@@ -71,8 +79,10 @@ struct rb_root {
 };
 struct binder_context {
     struct binder_node* binder_context_mgr_node;
+    struct mutex context_mgr_node_lock;
     /* unknow */
 };
+struct binder_alloc;
 struct binder_proc {
     struct hlist_node proc_node;
     struct rb_root threads;
@@ -168,15 +178,7 @@ struct binder_transaction {
     struct binder_priority priority;
     struct binder_priority saved_priority;
     bool set_priority_called;
-    kuid_t sender_euid;
-    binder_uintptr_t security_ctx;
-    /**
-     * @lock:  protects @from, @to_proc, and @to_thread
-     *
-     * @from, @to_proc, and @to_thread can be set to NULL
-     * during thread teardown
-     */
-    spinlock_t lock;
+    // unknow
 };
 struct binder_error {
     struct binder_work work;
@@ -187,6 +189,22 @@ struct wait_queue_head {
     struct list_head head;
 };
 typedef struct wait_queue_head wait_queue_head_t;
+enum binder_stat_types {
+    BINDER_STAT_PROC,
+    BINDER_STAT_THREAD,
+    BINDER_STAT_NODE,
+    BINDER_STAT_REF,
+    BINDER_STAT_DEATH,
+    BINDER_STAT_TRANSACTION,
+    BINDER_STAT_TRANSACTION_COMPLETE,
+    BINDER_STAT_COUNT
+};
+struct binder_stats {
+    atomic_t br[(((29201u) >> 0) & ((1 << 8) - 1)) + 1];
+    atomic_t bc[(((1078485778) >> 0) & ((1 << 8) - 1)) + 1];
+    atomic_t obj_created[BINDER_STAT_COUNT];
+    atomic_t obj_deleted[BINDER_STAT_COUNT];
+};
 struct binder_thread {
     struct binder_proc* proc;
     struct rb_node rb_node;
@@ -200,7 +218,11 @@ struct binder_thread {
     struct binder_error return_error;
     struct binder_error reply_error;
     wait_queue_head_t wait;
-    /* unknow */
+    struct binder_stats stats;
+    atomic_t tmp_ref;
+    bool is_dead;
+    struct task_struct* task;
+    // unknow
 };
 
 struct binder_node {
@@ -259,7 +281,7 @@ struct binder_buffer {
     size_t offsets_size;
     size_t extra_buffers_size;
     void __user* user_data;
-    int    pid;
+    int pid;
 };
 
 // linux/netlink.h
@@ -308,7 +330,7 @@ struct sk_buff {
         };
         struct list_head tcp_tsorted_anchor;
     };
-    /* unknow */
+/* unknow */
 };
 struct net;
 struct sock;
@@ -332,6 +354,34 @@ struct nlmsghdr {
 #define NLMSG_ALIGNTO 4U
 #define NLMSG_ALIGN(len) (((len) + NLMSG_ALIGNTO - 1) & ~(NLMSG_ALIGNTO - 1))
 #define NLMSG_HDRLEN ((int)NLMSG_ALIGN(sizeof(struct nlmsghdr)))
+#define NLMSG_LENGTH(len) ((len) + NLMSG_HDRLEN)
+#define NLMSG_SPACE(len) NLMSG_ALIGN(NLMSG_LENGTH(len))
+#define NLMSG_DATA(nlh)  ((void*)(((char*)nlh) + NLMSG_LENGTH(0)))
+
+enum MSG_TYPE {
+    O_MSG,
+    LOOPBACK_MSG,
+    MSG_TO_USER,
+    MSG_TO_KERN,
+    MSG_END,
+};
+
+struct scm_creds {
+    u32	pid;
+    kuid_t	uid;
+    kgid_t	gid;
+};
+struct netlink_skb_parms {
+    struct scm_creds	creds;		/* Skb credentials	*/
+    __u32			portid;
+    __u32			dst_group;
+    __u32			flags;
+    struct sock* sk;
+    bool			nsid_is_set;
+    int			nsid;
+};
+#define NETLINK_CB(skb)		(*(struct netlink_skb_parms*)&((skb)->cb))
+#define NETLINK_CREDS(skb)	(&NETLINK_CB((skb)).creds)
 
 // linux/gfp.h
 #define NUMA_NO_NODE (-1)
@@ -386,162 +436,174 @@ struct file_operations {
     void (*show_fdinfo)(struct seq_file* m, struct file* f);
     /* unknow */
 };
+struct proc_ops {
+    unsigned int proc_flags;
+    int	(*proc_open)(struct inode*, struct file*);
+    ssize_t(*proc_read)(struct file*, char __user*, size_t, loff_t*);
+    ssize_t(*proc_read_iter)(struct kiocb*, struct iov_iter*);
+    ssize_t(*proc_write)(struct file*, const char __user*, size_t, loff_t*);
+    loff_t(*proc_lseek)(struct file*, loff_t, int);
+    int	(*proc_release)(struct inode*, struct file*);
+    __poll_t(*proc_poll)(struct file*, struct poll_table_struct*);
+    long	(*proc_ioctl)(struct file*, unsigned int, unsigned long);
+    /* unknow */
+};
 
 // asm/atomic.h
-#define atomic_read(v)		READ_ONCE((v)->counter)
+#define atomic_read(v) READ_ONCE((v)->counter)
 
 // linux/schde/jobctl.h
 /*
  * task->jobctl flags
  */
-#define JOBCTL_STOP_SIGMASK	0xffff	/* signr of the last group stop */
+#define JOBCTL_STOP_SIGMASK 0xffff /* signr of the last group stop */
 
-#define JOBCTL_STOP_DEQUEUED_BIT 16	/* stop signal dequeued */
-#define JOBCTL_STOP_PENDING_BIT	17	/* task should stop for group stop */
-#define JOBCTL_STOP_CONSUME_BIT	18	/* consume group stop count */
-#define JOBCTL_TRAP_STOP_BIT	19	/* trap for STOP */
-#define JOBCTL_TRAP_NOTIFY_BIT	20	/* trap for NOTIFY */
-#define JOBCTL_TRAPPING_BIT	21	/* switching to TRACED */
-#define JOBCTL_LISTENING_BIT	22	/* ptracer is listening for events */
-#define JOBCTL_TRAP_FREEZE_BIT	23	/* trap for cgroup freezer */
+#define JOBCTL_STOP_DEQUEUED_BIT 16 /* stop signal dequeued */
+#define JOBCTL_STOP_PENDING_BIT 17  /* task should stop for group stop */
+#define JOBCTL_STOP_CONSUME_BIT 18  /* consume group stop count */
+#define JOBCTL_TRAP_STOP_BIT 19     /* trap for STOP */
+#define JOBCTL_TRAP_NOTIFY_BIT 20   /* trap for NOTIFY */
+#define JOBCTL_TRAPPING_BIT 21      /* switching to TRACED */
+#define JOBCTL_LISTENING_BIT 22     /* ptracer is listening for events */
+#define JOBCTL_TRAP_FREEZE_BIT 23   /* trap for cgroup freezer */
 
-#define JOBCTL_STOP_DEQUEUED	(1UL << JOBCTL_STOP_DEQUEUED_BIT)
-#define JOBCTL_STOP_PENDING	(1UL << JOBCTL_STOP_PENDING_BIT)
-#define JOBCTL_STOP_CONSUME	(1UL << JOBCTL_STOP_CONSUME_BIT)
-#define JOBCTL_TRAP_STOP	(1UL << JOBCTL_TRAP_STOP_BIT)
-#define JOBCTL_TRAP_NOTIFY	(1UL << JOBCTL_TRAP_NOTIFY_BIT)
-#define JOBCTL_TRAPPING		(1UL << JOBCTL_TRAPPING_BIT)
-#define JOBCTL_LISTENING	(1UL << JOBCTL_LISTENING_BIT)
-#define JOBCTL_TRAP_FREEZE	(1UL << JOBCTL_TRAP_FREEZE_BIT)
+#define JOBCTL_STOP_DEQUEUED (1UL << JOBCTL_STOP_DEQUEUED_BIT)
+#define JOBCTL_STOP_PENDING (1UL << JOBCTL_STOP_PENDING_BIT)
+#define JOBCTL_STOP_CONSUME (1UL << JOBCTL_STOP_CONSUME_BIT)
+#define JOBCTL_TRAP_STOP (1UL << JOBCTL_TRAP_STOP_BIT)
+#define JOBCTL_TRAP_NOTIFY (1UL << JOBCTL_TRAP_NOTIFY_BIT)
+#define JOBCTL_TRAPPING (1UL << JOBCTL_TRAPPING_BIT)
+#define JOBCTL_LISTENING (1UL << JOBCTL_LISTENING_BIT)
+#define JOBCTL_TRAP_FREEZE (1UL << JOBCTL_TRAP_FREEZE_BIT)
 
-#define JOBCTL_TRAP_MASK	(JOBCTL_TRAP_STOP | JOBCTL_TRAP_NOTIFY)
-#define JOBCTL_PENDING_MASK	(JOBCTL_STOP_PENDING | JOBCTL_TRAP_MASK)
+#define JOBCTL_TRAP_MASK (JOBCTL_TRAP_STOP | JOBCTL_TRAP_NOTIFY)
+#define JOBCTL_PENDING_MASK (JOBCTL_STOP_PENDING | JOBCTL_TRAP_MASK)
 
 // linux/schde.h
 
 /*
  * Per process flags
  */
-#define PF_VCPU			0x00000001	/* I'm a virtual CPU */
-#define PF_IDLE			0x00000002	/* I am an IDLE thread */
-#define PF_EXITING		0x00000004	/* Getting shut down */
-#define PF_IO_WORKER		0x00000010	/* Task is an IO worker */
-#define PF_WQ_WORKER		0x00000020	/* I'm a workqueue worker */
-#define PF_FORKNOEXEC		0x00000040	/* Forked but didn't exec */
-#define PF_MCE_PROCESS		0x00000080      /* Process policy on mce errors */
-#define PF_SUPERPRIV		0x00000100	/* Used super-user privileges */
-#define PF_DUMPCORE		0x00000200	/* Dumped core */
-#define PF_SIGNALED		0x00000400	/* Killed by a signal */
-#define PF_MEMALLOC		0x00000800	/* Allocating memory */
-#define PF_NPROC_EXCEEDED	0x00001000	/* set_user() noticed that RLIMIT_NPROC was exceeded */
-#define PF_USED_MATH		0x00002000	/* If unset the fpu must be initialized before use */
-#define PF_NOFREEZE		0x00008000	/* This thread should not be frozen */
-#define PF_FROZEN		0x00010000	/* Frozen for system suspend */
-#define PF_KSWAPD		0x00020000	/* I am kswapd */
-#define PF_MEMALLOC_NOFS	0x00040000	/* All allocation requests will inherit GFP_NOFS */
-#define PF_MEMALLOC_NOIO	0x00080000	/* All allocation requests will inherit GFP_NOIO */
-#define PF_LOCAL_THROTTLE	0x00100000	/* Throttle writes only against the bdi I write to,
-* I am cleaning dirty pages from some other bdi. */
-#define PF_KTHREAD		0x00200000	/* I am a kernel thread */
-#define PF_RANDOMIZE		0x00400000	/* Randomize virtual address space */
-#define PF_SWAPWRITE		0x00800000	/* Allowed to write to swap */
-#define PF_NO_SETAFFINITY	0x04000000	/* Userland is not allowed to meddle with cpus_mask */
-#define PF_MCE_EARLY		0x08000000      /* Early kill for mce process policy */
-#define PF_MEMALLOC_PIN		0x10000000	/* Allocation context constrained to zones which allow long term pinning. */
-#define PF_FREEZER_SKIP		0x40000000	/* Freezer should not count it as freezable */
-#define PF_SUSPEND_TASK		0x80000000      /* This thread called freeze_processes() and should not be frozen */
+#define PF_VCPU 0x00000001           /* I'm a virtual CPU */
+#define PF_IDLE 0x00000002           /* I am an IDLE thread */
+#define PF_EXITING 0x00000004        /* Getting shut down */
+#define PF_IO_WORKER 0x00000010      /* Task is an IO worker */
+#define PF_WQ_WORKER 0x00000020      /* I'm a workqueue worker */
+#define PF_FORKNOEXEC 0x00000040     /* Forked but didn't exec */
+#define PF_MCE_PROCESS 0x00000080    /* Process policy on mce errors */
+#define PF_SUPERPRIV 0x00000100      /* Used super-user privileges */
+#define PF_DUMPCORE 0x00000200       /* Dumped core */
+#define PF_SIGNALED 0x00000400       /* Killed by a signal */
+#define PF_MEMALLOC 0x00000800       /* Allocating memory */
+#define PF_NPROC_EXCEEDED 0x00001000 /* set_user() noticed that RLIMIT_NPROC was exceeded */
+#define PF_USED_MATH 0x00002000      /* If unset the fpu must be initialized before use */
+#define PF_NOFREEZE 0x00008000       /* This thread should not be frozen */
+#define PF_FROZEN 0x00010000         /* Frozen for system suspend */
+#define PF_KSWAPD 0x00020000         /* I am kswapd */
+#define PF_MEMALLOC_NOFS 0x00040000  /* All allocation requests will inherit GFP_NOFS */
+#define PF_MEMALLOC_NOIO 0x00080000  /* All allocation requests will inherit GFP_NOIO */
+#define PF_LOCAL_THROTTLE 0x00100000 /* Throttle writes only against the bdi I write to, \
+                                      * I am cleaning dirty pages from some other bdi. */
+#define PF_KTHREAD 0x00200000        /* I am a kernel thread */
+#define PF_RANDOMIZE 0x00400000      /* Randomize virtual address space */
+#define PF_SWAPWRITE 0x00800000      /* Allowed to write to swap */
+#define PF_NO_SETAFFINITY 0x04000000 /* Userland is not allowed to meddle with cpus_mask */
+#define PF_MCE_EARLY 0x08000000      /* Early kill for mce process policy */
+#define PF_MEMALLOC_PIN 0x10000000   /* Allocation context constrained to zones which allow long term pinning. */
+#define PF_FREEZER_SKIP 0x40000000   /* Freezer should not count it as freezable */
+#define PF_SUSPEND_TASK 0x80000000   /* This thread called freeze_processes() and should not be frozen */
 
 // uapi/asm/signal.h
-#define NSIG		32
-#define _NSIG		64
-#define SIGHUP		 1
-#define SIGINT		 2
-#define SIGQUIT		 3
-#define SIGILL		 4
-#define SIGTRAP		 5
-#define SIGABRT		 6
-#define SIGIOT		 6
-#define SIGBUS		 7
-#define SIGFPE		 8
-#define SIGKILL		 9
-#define SIGUSR1		10
-#define SIGSEGV		11
-#define SIGUSR2		12
-#define SIGPIPE		13
-#define SIGALRM		14
-#define SIGTERM		15
-#define SIGSTKFLT	16
-#define SIGCHLD		17
-#define SIGCONT		18
-#define SIGSTOP		19
-#define SIGTSTP		20
-#define SIGTTIN		21
-#define SIGTTOU		22
-#define SIGURG		23
-#define SIGXCPU		24
-#define SIGXFSZ		25
-#define SIGVTALRM	26
-#define SIGPROF		27
-#define SIGWINCH	28
-#define SIGIO		29
-#define SIGPOLL		SIGIO
+#define NSIG 32
+#define _NSIG 64
+#define SIGHUP 1
+#define SIGINT 2
+#define SIGQUIT 3
+#define SIGILL 4
+#define SIGTRAP 5
+#define SIGABRT 6
+#define SIGIOT 6
+#define SIGBUS 7
+#define SIGFPE 8
+#define SIGKILL 9
+#define SIGUSR1 10
+#define SIGSEGV 11
+#define SIGUSR2 12
+#define SIGPIPE 13
+#define SIGALRM 14
+#define SIGTERM 15
+#define SIGSTKFLT 16
+#define SIGCHLD 17
+#define SIGCONT 18
+#define SIGSTOP 19
+#define SIGTSTP 20
+#define SIGTTIN 21
+#define SIGTTOU 22
+#define SIGURG 23
+#define SIGXCPU 24
+#define SIGXFSZ 25
+#define SIGVTALRM 26
+#define SIGPROF 27
+#define SIGWINCH 28
+#define SIGIO 29
+#define SIGPOLL SIGIO
 /*
 #define SIGLOST		29
 */
-#define SIGPWR		30
-#define SIGSYS		31
-#define	SIGUNUSED	31
+#define SIGPWR 30
+#define SIGSYS 31
+#define SIGUNUSED 31
 
 /* These should not be considered constants from userland.  */
-#define SIGRTMIN	32
-#define SIGRTMAX	_NSIG
+#define SIGRTMIN 32
+#define SIGRTMAX _NSIG
 
-#define SIGSWI		32
+#define SIGSWI 32
 
-
-#define __SIGINFO \
-struct {          \
-	int si_signo; \
-	int si_errno; \
-	int si_code;  \
-}
+#define __SIGINFO     \
+    struct            \
+    {                 \
+        int si_signo; \
+        int si_errno; \
+        int si_code;  \
+    }
 typedef struct kernel_siginfo {
     __SIGINFO;
 } kernel_siginfo_t;
 
 // linux/socket.h
 
-#define MSG_OOB		1
-#define MSG_PEEK	2
-#define MSG_DONTROUTE	4
-#define MSG_TRYHARD     4       /* Synonym for MSG_DONTROUTE for DECnet */
-#define MSG_CTRUNC	8
-#define MSG_PROBE	0x10	/* Do not send. Only probe path f.e. for MTU */
-#define MSG_TRUNC	0x20
-#define MSG_DONTWAIT	0x40	/* Nonblocking io		 */
-#define MSG_EOR         0x80	/* End of record */
-#define MSG_WAITALL	0x100	/* Wait for a full request */
-#define MSG_FIN         0x200
-#define MSG_SYN		0x400
-#define MSG_CONFIRM	0x800	/* Confirm path validity */
-#define MSG_RST		0x1000
-#define MSG_ERRQUEUE	0x2000	/* Fetch message from error queue */
-#define MSG_NOSIGNAL	0x4000	/* Do not generate SIGPIPE */
-#define MSG_MORE	0x8000	/* Sender will send more */
-#define MSG_WAITFORONE	0x10000	/* recvmmsg(): block until 1+ packets avail */
+#define MSG_OOB 1
+#define MSG_PEEK 2
+#define MSG_DONTROUTE 4
+#define MSG_TRYHARD 4 /* Synonym for MSG_DONTROUTE for DECnet */
+#define MSG_CTRUNC 8
+#define MSG_PROBE 0x10 /* Do not send. Only probe path f.e. for MTU */
+#define MSG_TRUNC 0x20
+#define MSG_DONTWAIT 0x40 /* Nonblocking io		 */
+#define MSG_EOR 0x80      /* End of record */
+#define MSG_WAITALL 0x100 /* Wait for a full request */
+#define MSG_FIN 0x200
+#define MSG_SYN 0x400
+#define MSG_CONFIRM 0x800 /* Confirm path validity */
+#define MSG_RST 0x1000
+#define MSG_ERRQUEUE 0x2000           /* Fetch message from error queue */
+#define MSG_NOSIGNAL 0x4000           /* Do not generate SIGPIPE */
+#define MSG_MORE 0x8000               /* Sender will send more */
+#define MSG_WAITFORONE 0x10000        /* recvmmsg(): block until 1+ packets avail */
 #define MSG_SENDPAGE_NOPOLICY 0x10000 /* sendpage() internal : do no apply policy */
-#define MSG_SENDPAGE_NOTLAST 0x20000 /* sendpage() internal : not the last page */
-#define MSG_BATCH	0x40000 /* sendmmsg(): more messages coming */
-#define MSG_EOF         MSG_FIN
-#define MSG_NO_SHARED_FRAGS 0x80000 /* sendpage() internal : page frags are not shared */
-#define MSG_SENDPAGE_DECRYPTED	0x100000 /* sendpage() internal : page may carry
-                      * plain text and require encryption
-                      */
+#define MSG_SENDPAGE_NOTLAST 0x20000  /* sendpage() internal : not the last page */
+#define MSG_BATCH 0x40000             /* sendmmsg(): more messages coming */
+#define MSG_EOF MSG_FIN
+#define MSG_NO_SHARED_FRAGS 0x80000     /* sendpage() internal : page frags are not shared */
+#define MSG_SENDPAGE_DECRYPTED 0x100000 /* sendpage() internal : page may carry \
+                                         * plain text and require encryption    \
+                                         */
 
-#define MSG_ZEROCOPY	0x4000000	/* Use user data in kernel path */
-#define MSG_FASTOPEN	0x20000000	/* Send data in TCP SYN */
-#define MSG_CMSG_CLOEXEC 0x40000000	/* Set close_on_exec for file
-                       descriptor received through
+#define MSG_ZEROCOPY 0x4000000      /* Use user data in kernel path */
+#define MSG_FASTOPEN 0x20000000     /* Send data in TCP SYN */
+#define MSG_CMSG_CLOEXEC 0x40000000 /* Set close_on_exec for file \
+                       descriptor received through                \
                        SCM_RIGHTS */
 
 typedef struct refcount_struct {
@@ -550,9 +612,52 @@ typedef struct refcount_struct {
 
 // include/linux/sched.h
 
+/* Used in tsk->state: */
+#define TASK_RUNNING 0x0000
+#define TASK_INTERRUPTIBLE 0x0001
+#define TASK_UNINTERRUPTIBLE 0x0002
+#define __TASK_STOPPED 0x0004
+#define __TASK_TRACED 0x0008
+/* Used in tsk->exit_state: */
+#define EXIT_DEAD 0x0010
+#define EXIT_ZOMBIE 0x0020
+#define EXIT_TRACE (EXIT_ZOMBIE | EXIT_DEAD)
+/* Used in tsk->state again: */
+#define TASK_PARKED 0x0040
+#define TASK_DEAD 0x0080
+#define TASK_WAKEKILL 0x0100
+#define TASK_WAKING 0x0200
+#define TASK_NOLOAD 0x0400
+#define TASK_NEW 0x0800
+#define TASK_STATE_MAX 0x1000
+
+/* Convenience macros for the sake of set_current_state: */
+#define TASK_KILLABLE (TASK_WAKEKILL | TASK_UNINTERRUPTIBLE)
+#define TASK_STOPPED (TASK_WAKEKILL | __TASK_STOPPED)
+#define TASK_TRACED (TASK_WAKEKILL | __TASK_TRACED)
+
+#define TASK_IDLE (TASK_UNINTERRUPTIBLE | TASK_NOLOAD)
+
+/* Convenience macros for the sake of wake_up(): */
+#define TASK_NORMAL (TASK_INTERRUPTIBLE | TASK_UNINTERRUPTIBLE)
+
+/* get_task_state(): */
+#define TASK_REPORT (TASK_RUNNING | TASK_INTERRUPTIBLE |       \
+                     TASK_UNINTERRUPTIBLE | __TASK_STOPPED |   \
+                     __TASK_TRACED | EXIT_DEAD | EXIT_ZOMBIE | \
+                     TASK_PARKED)
+
+#define task_is_traced(task) ((task->state & __TASK_TRACED) != 0)
+
+#define task_is_stopped(task) ((task->state & __TASK_STOPPED) != 0)
+
+#define task_is_stopped_or_traced(task) ((task->state & (__TASK_STOPPED | __TASK_TRACED)) != 0)
+
 struct task_struct {
-    unsigned int			__state;
+    unsigned int __state;
     // unknow
+    char unknow[0x54];
+    volatile long state;
 };
 
 // include/linux/cgroup-defs.h
@@ -576,22 +681,14 @@ enum {
 };
 
 struct cftype;
-/**
- * test_bit - Determine whether a bit is set
- * @nr: bit number to test
- * @addr: Address to start counting from
- */
-static inline int test_bit(int nr, const volatile unsigned long* addr)
-{
-    return 1UL & (addr[BIT_WORD(nr)] >> (nr & (BITS_PER_LONG - 1)));
-}
+
 #define CGROUP_SUBSYS_COUNT 0
 struct percpu_ref {
     /*
      * The low bit of the pointer indicates whether the ref is in percpu
      * mode; if set, then get/put will manipulate the atomic_t.
      */
-    unsigned long		percpu_count_ptr;
+    unsigned long percpu_count_ptr;
 
     /*
      * 'percpu_ref' is often embedded into user structure, and only
@@ -669,9 +766,9 @@ struct cgroup_file {
     // unknow
 };
 struct task_cputime {
-    u64				stime;
-    u64				utime;
-    unsigned long long		sum_exec_runtime;
+    u64 stime;
+    u64 utime;
+    unsigned long long sum_exec_runtime;
 };
 struct cgroup_base_stat {
     struct task_cputime cputime;
@@ -680,7 +777,7 @@ struct cgroup {
     /* self css with NULL ->ss, points back to this cgroup */
     struct cgroup_subsys_state self;
 
-    unsigned long flags;		/* "unsigned long" so bitops work */
+    unsigned long flags; /* "unsigned long" so bitops work */
 
     /*
      * The depth this cgroup is at.  The root is at depth zero and each
@@ -723,11 +820,11 @@ struct cgroup {
     int nr_populated_domain_children;
     int nr_populated_threaded_children;
 
-    int nr_threaded_children;	/* # of live threaded child cgroups */
+    int nr_threaded_children; /* # of live threaded child cgroups */
 
-    struct kernfs_node* kn;		/* cgroup kernfs entry */
-    struct cgroup_file procs_file;	/* handle for "cgroup.procs" */
-    struct cgroup_file events_file;	/* handle for "cgroup.events" */
+    struct kernfs_node* kn;         /* cgroup kernfs entry */
+    struct cgroup_file procs_file;  /* handle for "cgroup.procs" */
+    struct cgroup_file events_file; /* handle for "cgroup.events" */
 
     /*
      * The bitmask of subsystems enabled on the child cgroups.
@@ -769,7 +866,7 @@ struct cgroup {
      * specific task are charged to the dom_cgrp.
      */
     struct cgroup* dom_cgrp;
-    struct cgroup* old_dom_cgrp;		/* used while enabling threaded */
+    struct cgroup* old_dom_cgrp; /* used while enabling threaded */
 
     /* per-cpu recursive resource statistics */
     struct cgroup_rstat_cpu __percpu* rstat_cpu;
@@ -868,6 +965,5 @@ struct css_set {
     /* For RCU-protected deletion */
     struct rcu_head rcu_head;
 };
-
 
 #endif /* __RE_KERNEL_H */

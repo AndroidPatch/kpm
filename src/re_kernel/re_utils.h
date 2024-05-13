@@ -8,40 +8,57 @@
 
 #include <hook.h>
 #include <ksyms.h>
+#include <stdarg.h>
 #include <linux/cred.h>
 #include <linux/sched.h>
-
+#include <uapi/asm-generic/errno.h>
 
 #define bits32(n, high, low) ((uint32_t)((n) << (31u - (high))) >> (31u - (high) + (low)))
 #define bit(n, st) (((n) >> (st)) & 1)
 #define sign64_extend(n, len) \
-    (((uint64_t)((n) << (63u - (len - 1))) >> 63u) ? ((n) | (0xFFFFFFFFFFFFFFFF << (len))) : n)
+  (((uint64_t)((n) << (63u - (len - 1))) >> 63u) ? ((n) | (0xFFFFFFFFFFFFFFFF << (len))) : n)
 
 typedef uint32_t inst_type_t;
 typedef uint32_t inst_mask_t;
 
+struct tracepoint;
+
 #define INST_ADD_64 0x91000000u
 #define INST_ADD_64_Rn_X0 0x91000000u
+#define INST_ADD_64_Rn_X19_Rd_X0 0x91000260u
 #define INST_ADD_64_Rd_X0 0x91000000u
 #define INST_ADD_64_Rd_X1 0x91000001u
+#define INST_LDR_32_ 0xB9400000u
+#define INST_LDR_32_X0 0xB9400000u
 #define INST_LDR_64_ 0xF9400000u
 #define INST_LDR_64_X0 0xF9400000u
 #define INST_LDR_64_SP 0xF94003E0u
 #define INST_LDRB 0x39400000u
+#define INST_LDRB_X0 0x39400000u
 #define INST_LDRH 0x79400000u
+#define INST_STR_32_x0 0xB9000000u
+#define INST_CBZ 0x34000000
+#define INST_CBNZ 0x35000000
 #define INST_TBZ 0x36000000u
 #define INST_TBNZ 0x37000000u
 #define INST_TBNZ_5 0x37280000u
 
 #define MASK_ADD_64 0xFF800000u
 #define MASK_ADD_64_Rn_X0 0xFF8003E0u
+#define MASK_ADD_64_Rn_X19_Rd_X0 0xFF8003FFu
 #define MASK_ADD_64_Rd_X0 0xFF80001Fu
 #define MASK_ADD_64_Rd_X1 0xFF80001Fu
+#define MASK_LDR_32_ 0xFFC00000u
+#define MASK_LDR_32_X0 0xFFC003E0u
 #define MASK_LDR_64_ 0xFFC00000u
 #define MASK_LDR_64_X0 0xFFC003E0u
 #define MASK_LDR_64_SP 0xFFC003E0u
 #define MASK_LDRB 0xFFC00000u
+#define MASK_LDRB_X0 0xFFC003E0u
 #define MASK_LDRH 0xFFC00000u
+#define MASK_STR_32_x0 0xFFC003E0u
+#define MASK_CBZ 0x7F000000u
+#define MASK_CBNZ 0x7F000000u
 #define MASK_TBZ 0x7F000000u
 #define MASK_TBNZ 0x7F000000u
 #define MASK_TBNZ_5 0xFFF80000u
@@ -81,13 +98,24 @@ typedef uint32_t inst_mask_t;
     func = 0;                        \
   }
 
-#define task_uid(task)                                                                       \
-  ({                                                                                         \
-    struct cred *cred = *(struct cred **)((uintptr_t)task + task_struct_offset.cred_offset); \
-    kuid_t ___val = *(kuid_t *)((uintptr_t)cred + cred_offset.uid_offset);                   \
-    ___val;                                                                                  \
-  })
 
+#define __task_cred(task)	rcu_dereference((task)->real_cred)
+
+#define task_uid(task) task_real_uid(task)
+  // ({                                                                                               \
+  //   rcu_read_lock();                                                                               \
+  //   struct cred __rcu *cred = *(struct cred **)((uintptr_t)task + task_struct_offset.cred_offset); \
+  //   kuid_t ___val = *(kuid_t *)((uintptr_t)cred + cred_offset.uid_offset);                         \
+  //   rcu_read_unlock();                                                                             \
+  //   ___val;                                                                                        \
+  // })
+
+#define task_real_uid(task)                                                                             \
+  ({                                                                                                    \
+    struct cred __rcu *cred = *(struct cred **)((uintptr_t)task + task_struct_offset.real_cred_offset); \
+    kuid_t ___val = *(kuid_t *)((uintptr_t)cred + cred_offset.uid_offset);                              \
+    ___val;                                                                                             \
+  })
 
 extern void kfunc_def(_binder_inner_proc_lock)(struct binder_proc* proc, int line);
 static inline void binder_inner_proc_lock(struct binder_proc* proc)
@@ -103,10 +131,31 @@ static inline void binder_inner_proc_unlock(struct binder_proc* proc)
   kfunc_not_found();
 }
 
+extern void kfunc_def(_binder_node_inner_lock)(struct binder_node* node, int line);
+static inline void binder_node_inner_lock(struct binder_node* node)
+{
+  kfunc_call(_binder_node_inner_lock, node, __LINE__);
+  kfunc_not_found();
+}
+
+extern void kfunc_def(_binder_node_inner_unlock)(struct binder_node* node, int line);
+static inline void binder_node_inner_unlock(struct binder_node* node)
+{
+  kfunc_call(_binder_node_inner_unlock, node, __LINE__);
+  kfunc_not_found();
+}
+
 extern bool kfunc_def(freezing_slow_path)(struct task_struct* p);
 static inline bool freezing_slow_path(struct task_struct* p)
 {
   kfunc_call(freezing_slow_path, p);
+  kfunc_not_found();
+  return false;
+}
+extern bool kfunc_def(cgroup_freezing)(struct task_struct* task);
+static inline bool cgroup_freezing(struct task_struct* task)
+{
+  kfunc_call(cgroup_freezing, task);
   kfunc_not_found();
   return false;
 }
@@ -169,8 +218,8 @@ extern struct nlmsghdr* kfunc_def(__nlmsg_put)(struct sk_buff* skb, u32 portid, 
  */
 static inline struct nlmsghdr* nlmsg_put(struct sk_buff* skb, u32 portid, u32 seq, int type, int payload, int flags)
 {
-    // if (unlikely(skb_tailroom(skb) < nlmsg_total_size(payload)))
-        // return NULL;
+  // if (unlikely(skb_tailroom(skb) < nlmsg_total_size(payload)))
+  // return NULL;
 
   kfunc_call(__nlmsg_put, skb, portid, seq, type, payload, flags);
   kfunc_not_found();
@@ -191,7 +240,7 @@ static inline int netlink_unicast(struct sock* ssk, struct sk_buff* skb, u32 por
 {
   kfunc_call(netlink_unicast, ssk, skb, portid, nonblock);
   kfunc_not_found();
-  return 0;
+  return -1;
 }
 extern struct sock* kfunc_def(__netlink_kernel_create)(struct net* net, int unit, struct module* module, struct netlink_kernel_cfg* cfg);
 static inline struct sock* netlink_kernel_create(struct net* net, int unit, struct netlink_kernel_cfg* cfg)
@@ -215,9 +264,9 @@ static inline struct proc_dir_entry* proc_mkdir(const char* name, struct proc_di
   return NULL;
 }
 extern struct proc_dir_entry* kfunc_def(proc_create_data)(const char* name, umode_t mode, struct proc_dir_entry* parent, const struct file_operations* proc_fops, void* data);
-static inline struct proc_dir_entry* proc_create_data(const char* name, umode_t mode, struct proc_dir_entry* parent, const struct file_operations* proc_fops, void* data)
+static inline struct proc_dir_entry* proc_create(const char* name, umode_t mode, struct proc_dir_entry* parent, const struct file_operations* proc_fops)
 {
-  kfunc_call(proc_create_data, name, mode, parent, proc_fops, data);
+  kfunc_call(proc_create_data, name, mode, parent, proc_fops, NULL);
   kfunc_not_found();
   return NULL;
 }
@@ -226,6 +275,58 @@ static inline void proc_remove(struct proc_dir_entry* de)
 {
   kfunc_call(proc_remove, de);
   kfunc_not_found();
+}
+
+// extern ssize_t kfunc_def(seq_read)(struct file* file, char __user* buf, size_t size, loff_t* ppos);
+// static inline ssize_t seq_read(struct file* file, char __user* buf, size_t size, loff_t* ppos) {
+//   kfunc_call(seq_read, file, buf, size, ppos);
+//   kfunc_not_found();
+//   return -ESRCH;
+// }
+// extern loff_t kfunc_def(seq_lseek)(struct file* file, loff_t offset, int whence);
+// static inline loff_t seq_lseek(struct file* file, loff_t offset, int whence) {
+//   kfunc_call(seq_lseek, file, offset, whence);
+//   kfunc_not_found();
+//   return -ESRCH;
+// }
+// extern int kfunc_def(seq_write)(struct seq_file* seq, const void* data, size_t len);
+// static inline int seq_write(struct seq_file* seq, const void* data, size_t len) {
+//   kfunc_call(seq_write, seq, data, len);
+//   kfunc_not_found();
+//   return -ESRCH;
+// }
+extern void kfunc_def(seq_printf)(struct seq_file* m, const char* f, ...);
+static inline void seq_printf(struct seq_file* m, const char* f, ...) {
+  va_list args;
+  va_start(args, f);
+  kfunc(seq_printf)(m, f, args);
+  va_end(args);
+}
+extern int kfunc_def(single_open)(struct file* file, int (*show)(struct seq_file*, void*), void* data);
+static inline int single_open(struct file* file, int (*show)(struct seq_file*, void*), void* data) {
+  kfunc_call(single_open, file, show, data);
+  kfunc_not_found();
+  return -ESRCH;
+}
+// extern int kfunc_def(single_release)(struct inode* inode, struct file* file);
+// static inline int single_release(struct inode* inode, struct file* file) {
+//   kfunc_call(single_release, inode, file);
+//   kfunc_not_found();
+//   return -ESRCH;
+// }
+
+extern int kfunc_def(tracepoint_probe_register)(struct tracepoint* tp, void* probe, void* data);
+static inline int tracepoint_probe_register(struct tracepoint* tp, void* probe, void* data) {
+  kfunc_call(tracepoint_probe_register, tp, probe, data);
+  kfunc_not_found();
+  return -ESRCH;
+}
+
+extern int kfunc_def(tracepoint_probe_unregister)(struct tracepoint* tp, void* probe, void* data);
+static inline int tracepoint_probe_unregister(struct tracepoint* tp, void* probe, void* data) {
+  kfunc_call(tracepoint_probe_unregister, tp, probe, data);
+  kfunc_not_found();
+  return -ESRCH;
 }
 
 #endif /* __RE_UTILS_H */
