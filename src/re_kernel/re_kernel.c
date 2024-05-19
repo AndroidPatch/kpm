@@ -16,8 +16,14 @@
 #include <taskext.h>
 #include <linux/fs.h>
 #include <linux/kernel.h>
+#include <linux/list.h>
 #include <linux/printk.h>
 #include <linux/string.h>
+#include <asm/atomic.h>
+
+#ifdef DEBUG
+#include <uapi/linux/limits.h>
+#endif /* DEBUG */
 
 #include "re_kernel.h"
 #include "re_utils.h"
@@ -32,17 +38,29 @@ KPM_DESCRIPTION("Re:Kernel, support 4.4, 4.9, 4.14, 4.19, 5.4, 5.10, 5.15");
 #define NETLINK_REKERNEL_MIN 22
 #define REKERNEL_USER_PORT 100
 #define REKERNEL_PACKET_SIZE 128
-#define REKERNEL_MIN_USERAPP_UID 10000
-#define REKERNEL_MAX_SYSTEM_UID 2000
-#define REKERNEL_WARN_AHEAD_MSGS 3
-#define REKERNEL_RESERVE_ORDER 17
-#define REKERNEL_WARN_AHEAD_SPACE (1 << REKERNEL_RESERVE_ORDER)
+#define MIN_USERAPP_UID 10000
+#define MAX_SYSTEM_UID 2000
+
+enum report_type {
+    BINDER,
+    SIGNAL
+};
+enum binder_type {
+    REPLY,
+    TRANSACTION,
+    OVERFLOW,
+};
+static const char* binder_type[] = {
+    "reply",
+    "transaction",
+    "free_buffer_full",
+};
 
 #define IZERO (1UL << 0x10)
 #define UZERO (1UL << 0x20)
 
 // cgroup_freezing
-bool kfunc_def(cgroup_freezing)(struct task_struct* task);
+static bool (*cgroup_freezing)(struct task_struct* task);
 // send_netlink_message
 struct sk_buff* kfunc_def(__alloc_skb)(unsigned int size, gfp_t gfp_mask, int flags, int node);
 struct nlmsghdr* kfunc_def(__nlmsg_put)(struct sk_buff* skb, u32 portid, u32 seq, int type, int len, int flags);
@@ -64,8 +82,21 @@ int kfunc_def(single_open)(struct file* file, int (*show)(struct seq_file*, void
 int kfunc_def(single_release)(struct inode* inode, struct file* file);
 // hook binder_proc_transaction
 static int (*binder_proc_transaction)(struct binder_transaction* t, struct binder_proc* proc, struct binder_thread* thread);
+// free the outdated transaction and buffer
+static void (*binder_transaction_buffer_release)(struct binder_proc* proc, struct binder_thread* thread, struct binder_buffer* buffer, binder_size_t off_end_offset, bool is_failure);
+static void(*binder_alloc_free_buf)(struct binder_alloc* alloc, struct binder_buffer* buffer);
+void kfunc_def(kfree)(const void* objp);
+static struct binder_stats kvar_def(binder_stats);
 // hook do_send_sig_info
 static int (*do_send_sig_info)(int sig, struct siginfo* info, struct task_struct* p, enum pid_type type);
+// trace
+int kfunc_def(tracepoint_probe_register)(struct tracepoint* tp, void* probe, void* data);
+int kfunc_def(tracepoint_probe_unregister)(struct tracepoint* tp, void* probe, void* data);
+// trace_binder_transaction
+struct tracepoint kvar_def(__tracepoint_binder_transaction);
+#ifdef DEBUG
+int kfunc_def(get_cmdline)(struct task_struct* task, char* buffer, int buflen);
+#endif /* DEBUG */
 
 static uint64_t task_struct_flags_offset = UZERO, task_struct_jobctl_offset = UZERO, task_struct_pid_offset = UZERO, task_struct_group_leader_offset = UZERO, task_struct_frozen_offset = UZERO, task_struct_css_set_offset = UZERO,
 binder_proc_alloc_offset = UZERO,
@@ -75,32 +106,28 @@ cgroup_flags_offset = UZERO,
 task_struct_frozen_bit = UZERO;
 
 static struct sock* rekernel_netlink;
-static unsigned long rekernel_netlink_unit = UZERO;
+static unsigned long rekernel_netlink_unit = UZERO, trace = UZERO;
 static struct proc_dir_entry* rekernel_dir, * rekernel_unit_entry;
 
 // pid
-static inline pid_t task_pid(struct task_struct* task)
-{
+static inline pid_t task_pid(struct task_struct* task) {
     pid_t pid = *(pid_t*)((uintptr_t)task + task_struct_pid_offset);
     return pid;
 }
 // tgid
-static inline pid_t task_tgid(struct task_struct* task)
-{
+static inline pid_t task_tgid(struct task_struct* task) {
     pid_t tgid = *(pid_t*)((uintptr_t)task + task_struct_pid_offset + 0x4);
     return tgid;
 }
 // 判断线程是否进入 frozen 状态
-static inline bool cgroup_task_frozen(struct task_struct* task)
-{
+static inline bool cgroup_task_frozen(struct task_struct* task) {
     if (task_struct_frozen_offset == UZERO) {
         return false;
     }
     unsigned int frozen = *(unsigned int*)((uintptr_t)task + task_struct_frozen_offset);
     return bit(frozen, task_struct_frozen_bit);
 }
-static inline bool cgroup_task_freeze(struct task_struct* task)
-{
+static inline bool cgroup_task_freeze(struct task_struct* task) {
     bool ret = false;
     if (task_struct_css_set_offset == UZERO || css_set_dfl_cgrp_offset == UZERO || cgroup_flags_offset == UZERO) {
         return false;
@@ -112,50 +139,22 @@ static inline bool cgroup_task_freeze(struct task_struct* task)
     ret = bit(cgrp_flags, CGRP_FREEZE);
     return ret;
 }
-static inline bool frozen(struct task_struct* p)
-{
+static inline bool frozen(struct task_struct* p) {
     unsigned int flags = *(unsigned int*)((uintptr_t)p + task_struct_flags_offset);
     return (flags & PF_FROZEN);
 }
-static inline bool frozen_task_group(struct task_struct* task)
-{
+static inline bool frozen_task_group(struct task_struct* task) {
     return (cgroup_task_frozen(task) || cgroup_task_freeze(task) || cgroup_freezing(task) || frozen(task));
 }
 
-// 发送 netlink 消息
-static int send_netlink_message(char* msg, uint16_t len)
-{
-    struct sk_buff* skbuffer;
-    struct nlmsghdr* nlhdr;
-
-    skbuffer = nlmsg_new(len, GFP_ATOMIC);
-    if (!skbuffer) {
-        printk("netlink alloc failure.\n");
-        return -1;
-    }
-
-    nlhdr = nlmsg_put(skbuffer, 0, 0, rekernel_netlink_unit, len, 0);
-    if (!nlhdr) {
-        printk("nlmsg_put failaure.\n");
-        nlmsg_free(skbuffer);
-        return -1;
-    }
-
-    memcpy(nlmsg_data(nlhdr), msg, len);
-    return netlink_unicast(rekernel_netlink, skbuffer, REKERNEL_USER_PORT, MSG_DONTWAIT);
-}
-
 // 创建 netlink 服务
-static __noinline void netlink_rcv_msg(struct sk_buff* skb) {
-}
+static __noinline void netlink_rcv_msg(struct sk_buff* skb) { }
 
-static int rekernel_unit_show(struct seq_file* m, void* v)
-{
+static int rekernel_unit_show(struct seq_file* m, void* v) {
     kfunc(seq_printf)(m, "%d\n", rekernel_netlink_unit);
     return 0;
 }
-static __noinline int rekernel_unit_open(struct inode* inode, struct file* file)
-{
+static __noinline int rekernel_unit_open(struct inode* inode, struct file* file) {
     return single_open(file, rekernel_unit_show, NULL);
 }
 static __noinline ssize_t seq_read(struct file* file, char __user* buf, size_t size, loff_t* ppos) {
@@ -175,8 +174,7 @@ static const struct file_operations rekernel_unit_fops = {
     .owner = THIS_MODULE,
 };
 
-static int start_rekernel_server(void)
-{
+static int start_rekernel_server(void) {
     if (rekernel_netlink_unit != UZERO) {
         return 0;
     }
@@ -211,67 +209,197 @@ static int start_rekernel_server(void)
 
     return 0;
 }
+// 发送 netlink 消息
+static int send_netlink_message(char* msg, uint16_t len) {
+    struct sk_buff* skbuffer;
+    struct nlmsghdr* nlhdr;
 
-static void binder_proc_transaction_before(hook_fargs3_t* args, void* udata) {
-    if (start_rekernel_server() != 0) {
+    skbuffer = nlmsg_new(len, GFP_ATOMIC);
+    if (!skbuffer) {
+        printk("netlink alloc failure.\n");
+        return -1;
+    }
+
+    nlhdr = nlmsg_put(skbuffer, 0, 0, rekernel_netlink_unit, len, 0);
+    if (!nlhdr) {
+        printk("nlmsg_put failaure.\n");
+        nlmsg_free(skbuffer);
+        return -1;
+    }
+
+    memcpy(nlmsg_data(nlhdr), msg, len);
+    return netlink_unicast(rekernel_netlink, skbuffer, REKERNEL_USER_PORT, MSG_DONTWAIT);
+}
+
+static void rekernel_report(int reporttype, int type, pid_t src_pid, struct task_struct* src, pid_t dst_pid, struct task_struct* dst, bool oneway) {
+    if (start_rekernel_server() != 0)
+        return;
+
+    if (!frozen_task_group(dst))
+        return;
+
+    char binder_kmsg[REKERNEL_PACKET_SIZE];
+    switch (reporttype) {
+    case BINDER:
+        snprintf(binder_kmsg, sizeof(binder_kmsg), "type=Binder,bindertype=%s,oneway=%d,from_pid=%d,from=%d,target_pid=%d,target=%d;", binder_type[type], oneway, src_pid, task_uid(src).val, dst_pid, task_uid(dst).val);
+        break;
+    case SIGNAL:
+        snprintf(binder_kmsg, sizeof(binder_kmsg), "type=Signal,signal=%d,killer_pid=%d,killer=%d,dst_pid=%d,dst=%d;", type, src_pid, task_uid(src).val, dst_pid, task_uid(dst).val);
+        break;
+    default:
         return;
     }
-    struct binder_transaction* t = (struct binder_transaction*)args->arg0;
-    struct binder_proc* target_proc = (struct binder_proc*)args->arg1;
+#ifdef DEBUG
+    char src_cmdline[PATH_MAX], dst_cmdline[PATH_MAX];
+    memset(&src_cmdline, 0, PATH_MAX);
+    memset(&dst_cmdline, 0, PATH_MAX);
+    int res = 0;
+    res = get_cmdline(src, src_cmdline, PATH_MAX - 1);
+    src_cmdline[res] = '\0';
+    res = get_cmdline(dst, dst_cmdline, PATH_MAX - 1);
+    dst_cmdline[res] = '\0';
+    printk("re_kernel: %s\n", binder_kmsg);
+    printk("re_kernel: src_cmdline=%s,src_comm=%s,dst_cmdline=%s,dst_comm=%s\n", src_cmdline, get_task_comm(src), dst_cmdline, get_task_comm(dst));
+#endif /* DEBUG */
+    send_netlink_message(binder_kmsg, strlen(binder_kmsg));
+}
 
-    if (!t->from) { // oneway=1
-#ifndef QUIET
-        struct binder_alloc* target_alloc = (struct binder_alloc*)((uintptr_t)target_proc + binder_proc_alloc_offset);
-        size_t free_async_space = *(size_t*)((uintptr_t)target_alloc + binder_alloc_free_async_space_offset);
-        if (free_async_space < REKERNEL_WARN_AHEAD_SPACE
-            && target_proc->tsk
-            && frozen_task_group(target_proc->tsk)) {
-            char binder_kmsg[REKERNEL_PACKET_SIZE];
-            snprintf(binder_kmsg, sizeof(binder_kmsg), "type=Binder,bindertype=free_buffer_full,oneway=1,from_pid=%d,from=%d,target_pid=%d,target=%d;", task_pid(current), task_uid(current).val, target_proc->pid, task_uid(target_proc->tsk).val);
-#ifdef DEBUG
-            printk("re_kernel: %s\n", binder_kmsg);
-#endif /* DEBUG */
-            send_netlink_message(binder_kmsg, strlen(binder_kmsg));
+static void binder_reply_handler(pid_t src_pid, struct task_struct* src, pid_t dst_pid, struct task_struct* dst, bool oneway) {
+    if (unlikely(!dst))
+        return;
+    if (task_uid(dst).val > MAX_SYSTEM_UID || src_pid == dst_pid)
+        return;
+
+      // oneway=0
+    rekernel_report(BINDER, REPLY, src_pid, src, dst_pid, dst, oneway);
+}
+
+static void binder_trans_handler(pid_t src_pid, struct task_struct* src, pid_t dst_pid, struct task_struct* dst, bool oneway) {
+    if (unlikely(!dst))
+        return;
+    if ((task_uid(dst).val <= MIN_USERAPP_UID) || src_pid == dst_pid)
+        return;
+
+    rekernel_report(BINDER, TRANSACTION, src_pid, src, dst_pid, dst, oneway);
+}
+
+static void binder_overflow_handler(pid_t src_pid, struct task_struct* src, pid_t dst_pid, struct task_struct* dst, bool oneway) {
+    if (unlikely(!dst))
+        return;
+
+      // oneway=1
+    rekernel_report(BINDER, OVERFLOW, src_pid, src, dst_pid, dst, oneway);
+}
+
+static void rekernel_binder_transaction(void* data, bool reply, struct binder_transaction* t, struct binder_node* target_node) {
+    if (!t->to_proc)
+        return;
+
+    if (reply) {
+        binder_reply_handler(task_pid(current), current, t->to_proc->pid, t->to_proc->tsk, false);
+    } else if (t->from) {
+        if (t->from->proc) {
+            binder_trans_handler(t->from->proc->pid, t->from->proc->tsk, t->to_proc->pid, t->to_proc->tsk, false);
         }
-#endif /* QUIET */
+    } else { // oneway=1
+      // binder_trans_handler(task_pid(current), current, t->to_proc->pid, t->to_proc->tsk, true);
+
+        struct binder_alloc* target_alloc = (struct binder_alloc*)((uintptr_t)t->to_proc + binder_proc_alloc_offset);
+        size_t free_async_space = *(size_t*)((uintptr_t)target_alloc + binder_alloc_free_async_space_offset);
+        size_t buffer_size = *(size_t*)((uintptr_t)target_alloc + binder_alloc_buffer_size_offset);
+        if (free_async_space < (buffer_size / 10 + 0x300)) {
+            binder_overflow_handler(task_pid(current), current, t->to_proc->pid, t->to_proc->tsk, true);
+        }
+    }
+}
+
+static bool binder_can_update_transaction(struct binder_transaction* t1, struct binder_transaction* t2) {
+    if ((t1->flags & t2->flags & TF_ONE_WAY) != TF_ONE_WAY || !t1->to_proc || !t2->to_proc)
+        return false;
+    if (t1->to_proc->tsk == t2->to_proc->tsk
+        && t1->code == t2->code
+        && t1->flags == t2->flags
+        // && t1->buffer->pid == t2->buffer->pid // 4.19 以下无此数据
+        && t1->buffer->target_node->ptr == t2->buffer->target_node->ptr
+        && t1->buffer->target_node->cookie == t2->buffer->target_node->cookie)
+        return true;
+    return false;
+}
+
+// TODO: binder_inner_proc_lock(proc);
+static struct binder_transaction* binder_find_outdated_transaction_ilocked(struct binder_transaction* t, struct list_head* target_list) {
+    struct binder_work* w;
+
+    list_for_each_entry(w, target_list, entry) {
+        struct binder_transaction* t_queued;
+
+        if (w->type != BINDER_WORK_TRANSACTION)
+            continue;
+        t_queued = container_of(w, struct binder_transaction, work);
+        if (binder_can_update_transaction(t_queued, t))
+            return t_queued;
+    }
+    return NULL;
+}
+
+static inline void binder_release_entire_buffer(struct binder_proc* proc, struct binder_thread* thread, struct binder_buffer* buffer, bool is_failure) {
+    if (kver > VERSION(5, 0, 0)) {
+        binder_size_t off_end_offset = ALIGN(buffer->data_size, sizeof(void*));
+        off_end_offset += buffer->offsets_size;
+
+        binder_transaction_buffer_release(proc, thread, buffer, off_end_offset, is_failure);
     } else {
-        struct binder_proc* proc = t->from->proc;
-        if (proc
-            && proc->tsk
-            && target_proc->tsk
-            && task_uid(target_proc->tsk).val > REKERNEL_MIN_USERAPP_UID
-            && proc->pid != target_proc->pid
-            && frozen_task_group(target_proc->tsk)) {
-            char binder_kmsg[REKERNEL_PACKET_SIZE];
-            snprintf(binder_kmsg, sizeof(binder_kmsg), "type=Binder,bindertype=transaction,oneway=0,from_pid=%d,from=%d,target_pid=%d,target=%d;", proc->pid, task_uid(proc->tsk).val, target_proc->pid, task_uid(target_proc->tsk).val);
+        ((void (*)(struct binder_proc* proc, struct binder_buffer* buffer, binder_size_t failed_at, bool is_failure))\
+            binder_transaction_buffer_release)(proc, buffer, 0, is_failure);
+    }
+}
+
+static inline void binder_stats_deleted(enum binder_stat_types type) {
+    atomic_inc(&kvar(binder_stats)->obj_deleted[type]);
+}
+
+static void binder_proc_transaction_before(hook_fargs3_t* args, void* udata) {
+    struct binder_transaction* t = (struct binder_transaction*)args->arg0;
+    // 兼容不支持 trace 的内核
+    if (trace == UZERO) {
+        rekernel_binder_transaction(NULL, false, t, NULL);
+    }
+
+    if ((t->flags & TF_ONE_WAY)
+        && t->to_proc
+        && t->to_proc->tsk
+        && frozen_task_group(t->to_proc->tsk)) {
+        struct binder_node* node = t->buffer->target_node;
+        struct binder_alloc* target_alloc = (struct binder_alloc*)((uintptr_t)t->to_proc + binder_proc_alloc_offset);
+
+        struct binder_transaction* t_outdated = binder_find_outdated_transaction_ilocked(t, &node->async_todo);
+        if (t_outdated) {
 #ifdef DEBUG
-            printk("re_kernel: %s\n", binder_kmsg);
+            printk("re_kernel: free_outdated pid=%d,uid=%d,data_size=%d\n", t->to_proc->pid, task_uid(t->to_proc->tsk).val, t_outdated->buffer->data_size);
 #endif /* DEBUG */
-            send_netlink_message(binder_kmsg, strlen(binder_kmsg));
+            list_del_init(&t_outdated->work.entry);
+            struct binder_buffer* buffer = t_outdated->buffer;
+
+            t_outdated->buffer = NULL;
+            buffer->transaction = NULL;
+            binder_release_entire_buffer(t->to_proc, NULL, buffer, false);
+            binder_alloc_free_buf(target_alloc, buffer);
+            kfree(t_outdated);
+            binder_stats_deleted(BINDER_STAT_TRANSACTION);
         }
     }
 }
 
 static void do_send_sig_info_before(hook_fargs4_t* args, void* udata) {
-    if (start_rekernel_server() != 0) {
-        return;
-    }
     int sig = (int)args->arg0;
     struct task_struct* dst = (struct task_struct*)args->arg2;
 
-    if ((sig == SIGKILL || sig == SIGTERM || sig == SIGABRT || sig == SIGQUIT)
-        && frozen_task_group(dst)) {
-        char binder_kmsg[REKERNEL_PACKET_SIZE];
-        snprintf(binder_kmsg, sizeof(binder_kmsg), "type=Signal,signal=%d,killer_pid=%d,killer=%d,dst_pid=%d,dst=%d;", sig, task_tgid(current), task_uid(current).val, task_tgid(dst), task_uid(dst).val);
-#ifdef DEBUG
-        printk("re_kernel: %s\n", binder_kmsg);
-#endif /* DEBUG */
-        send_netlink_message(binder_kmsg, strlen(binder_kmsg));
+    if (sig == SIGKILL || sig == SIGTERM || sig == SIGABRT || sig == SIGQUIT) {
+        rekernel_report(SIGNAL, sig, task_tgid(current), current, task_tgid(dst), dst, NULL);
     }
 }
 
-static long calculate_offsets()
-{
+static long calculate_offsets() {
     // 获取 cgroup 相关偏移，没有就是不支持 CGRP_FREEZE
     // cgroup_exit_count = 1; task->css_set
     // cgroup_exit_count = 2; css_set->dfl_cgrp
@@ -283,6 +411,9 @@ static long calculate_offsets()
     u32 cgroup_exit_count = 0;
     uint32_t* cgroup_exit_src = (uint32_t*)cgroup_exit;
     for (u32 i = 0; i < 0x50; i++) {
+#ifdef DEBUG
+        printk("re_kernel: cgroup_exit %x %llx\n", i, cgroup_exit_src[i]);
+#endif /* DEBUG */
         if (cgroup_exit_src[i] == ARM64_RET) {
             break;
         } else if (cgroup_exit_start && cgroup_exit_count == 2 && (cgroup_exit_src[i] & MASK_LDR_64_) == INST_LDR_64_) {
@@ -316,6 +447,9 @@ static long calculate_offsets()
 
     uint32_t* recalc_sigpending_and_wake_src = (uint32_t*)recalc_sigpending_and_wake;
     for (u32 i = 0; i < 0x20; i++) {
+#ifdef DEBUG
+        printk("re_kernel: recalc_sigpending_and_wake %x %llx\n", i, recalc_sigpending_and_wake_src[i]);
+#endif /* DEBUG */
         if (recalc_sigpending_and_wake_src[i] == ARM64_RET) {
             break;
         } else if ((recalc_sigpending_and_wake_src[i] & MASK_TBZ) == INST_TBZ || (recalc_sigpending_and_wake_src[i] & MASK_TBNZ) == INST_TBNZ) {
@@ -336,14 +470,20 @@ static long calculate_offsets()
         }
     }
     // 获取 binder_proc->alloc
-    void (*binder_proc_dec_tmpref)(struct task_struct* t);
-    lookup_name(binder_proc_dec_tmpref);
+    void (*binder_free_proc)(struct binder_proc* proc);
+    binder_free_proc = (typeof(binder_free_proc))kallsyms_lookup_name("binder_free_proc");
+    if (!binder_free_proc) {
+        binder_free_proc = (typeof(binder_free_proc))kallsyms_lookup_name("binder_proc_dec_tmpref");
+    }
 
-    uint32_t* binder_proc_dec_tmpref_src = (uint32_t*)binder_proc_dec_tmpref;
-    for (u32 i = 0; i < 0xC0; i++) {
-        if ((binder_proc_dec_tmpref_src[i] & MASK_ADD_64_Rn_X19_Rd_X0) == INST_ADD_64_Rn_X19_Rd_X0) {
-            uint32_t sh = bit(binder_proc_dec_tmpref_src[i], 22);
-            uint64_t imm12 = imm12 = bits32(binder_proc_dec_tmpref_src[i], 21, 10);
+    uint32_t* binder_free_proc_src = (uint32_t*)binder_free_proc;
+    for (u32 i = 0; i < 0x70; i++) {
+#ifdef DEBUG
+        printk("re_kernel: binder_free_proc %x %llx\n", i, binder_free_proc_src[i]);
+#endif /* DEBUG */
+        if ((binder_free_proc_src[i] & MASK_ADD_64_Rn_X19_Rd_X0) == INST_ADD_64_Rn_X19_Rd_X0) {
+            uint32_t sh = bit(binder_free_proc_src[i], 22);
+            uint64_t imm12 = imm12 = bits32(binder_free_proc_src[i], 21, 10);
             if (sh) {
                 binder_proc_alloc_offset = sign64_extend((imm12 << 12u), 16u);
             } else {
@@ -361,12 +501,15 @@ static long calculate_offsets()
 
     uint32_t* binder_alloc_init_src = (uint32_t*)binder_alloc_init;
     for (u32 i = 0; i < 0x20; i++) {
+#ifdef DEBUG
+        printk("re_kernel: binder_alloc_init %x %llx\n", i, binder_alloc_init_src[i]);
+#endif /* DEBUG */
         if (binder_alloc_init_src[i] == ARM64_RET) {
             break;
         } else if ((binder_alloc_init_src[i] & MASK_STR_32_x0) == INST_STR_32_x0) {
             uint64_t imm12 = bits32(binder_alloc_init_src[i], 21, 10);
-            binder_alloc_pid_offset = sign64_extend((imm12 << 0b10u), 16u); // 0x74
-            binder_alloc_buffer_size_offset = binder_alloc_pid_offset - 0xC; // 0x68
+            binder_alloc_pid_offset = sign64_extend((imm12 << 0b10u), 16u);        // 0x74
+            binder_alloc_buffer_size_offset = binder_alloc_pid_offset - 0xC;       // 0x68
             binder_alloc_free_async_space_offset = binder_alloc_pid_offset - 0x1C; // 0x58
             binder_alloc_vma_offset = binder_alloc_pid_offset - 0x54;              // 0x20
             break;
@@ -387,6 +530,9 @@ static long calculate_offsets()
 
     uint32_t* freezing_slow_path_src = (uint32_t*)freezing_slow_path;
     for (u32 i = 0; i < 0x20; i++) {
+#ifdef DEBUG
+        printk("re_kernel: freezing_slow_path %x %llx\n", i, freezing_slow_path_src[i]);
+#endif /* DEBUG */
         if (freezing_slow_path_src[i] == ARM64_RET) {
             break;
         } else if ((freezing_slow_path_src[i] & MASK_LDR_32_X0) == INST_LDR_32_X0) {
@@ -406,9 +552,8 @@ static long calculate_offsets()
     return 0;
 }
 
-static long inline_hook_init(const char* args, const char* event, void* __user reserved)
-{
-    kfunc_lookup_name(cgroup_freezing);
+static long inline_hook_init(const char* args, const char* event, void* __user reserved) {
+    lookup_name(cgroup_freezing);
     kfunc_lookup_name(__alloc_skb);
     kfunc_lookup_name(__nlmsg_put);
     kfunc_lookup_name(kfree_skb);
@@ -424,13 +569,30 @@ static long inline_hook_init(const char* args, const char* event, void* __user r
     kfunc_lookup_name(seq_printf);
     kfunc_lookup_name(single_open);
     kfunc_lookup_name(single_release);
+    kfunc_lookup_name(tracepoint_probe_register);
+    kfunc_lookup_name(tracepoint_probe_unregister);
+
+    kvar_lookup_name(__tracepoint_binder_transaction);
+
+    lookup_name(binder_transaction_buffer_release);
+    lookup_name(binder_alloc_free_buf);
+    kfunc_lookup_name(kfree);
+    kvar_lookup_name(binder_stats);
 
     lookup_name(binder_proc_transaction);
     lookup_name(do_send_sig_info);
+#ifdef DEBUG
+    kfunc_lookup_name(get_cmdline);
+#endif /* DEBUG */
 
-    int rc = calculate_offsets();
-    if (rc < 0) {
+    int rc = 0;
+    rc = calculate_offsets();
+    if (rc < 0)
         return rc;
+
+    rc = tracepoint_probe_register(kvar(__tracepoint_binder_transaction), rekernel_binder_transaction, NULL);
+    if (rc == 0) {
+        trace = IZERO;
     }
 
     hook_func(binder_proc_transaction, 3, binder_proc_transaction_before, NULL, NULL);
@@ -439,22 +601,53 @@ static long inline_hook_init(const char* args, const char* event, void* __user r
     return 0;
 }
 
-static long inline_hook_control0(const char* ctl_args, char* __user out_msg, int outlen)
-{
+static long inline_hook_control0(const char* ctl_args, char* __user out_msg, int outlen) {
+    printk("\
+re_kernel: task_struct_flags_offset=0x%llx\n\
+re_kernel: task_struct_jobctl_offset=0x%llx\n\
+re_kernel: task_struct_pid_offset=0x%llx\n\
+re_kernel: task_struct_group_leader_offset=0x%llx\n\
+re_kernel: task_struct_frozen_offset=0x%llx\n\
+re_kernel: task_struct_css_set_offset=0x%llx\n",
+task_struct_flags_offset,
+task_struct_jobctl_offset,
+task_struct_pid_offset,
+task_struct_group_leader_offset,
+task_struct_frozen_offset,
+task_struct_css_set_offset);
+    printk("\
+re_kernel: binder_proc_alloc_offset=0x%llx\n\
+re_kernel: binder_alloc_pid_offset=0x%llx\n\
+re_kernel: binder_alloc_buffer_size_offset=0x%llx\n\
+re_kernel: binder_alloc_free_async_space_offset=0x%llx\n\
+re_kernel: binder_alloc_vma_offset=0x%llx\n",
+binder_proc_alloc_offset,
+binder_alloc_pid_offset,
+binder_alloc_buffer_size_offset,
+binder_alloc_free_async_space_offset,
+binder_alloc_vma_offset);
+    printk("\
+re_kernel: css_set_dfl_cgrp_offset=0x%llx\n\
+re_kernel: cgroup_flags_offset=0x%llx\n\
+re_kernel: task_struct_frozen_bit=0x%llx\n",
+css_set_dfl_cgrp_offset,
+cgroup_flags_offset,
+task_struct_frozen_bit);
     char msg[64];
     snprintf(msg, sizeof(msg), "_(._.)_");
     compat_copy_to_user(out_msg, msg, sizeof(msg));
     return 0;
 }
 
-static long inline_hook_exit(void* __user reserved)
-{
+static long inline_hook_exit(void* __user reserved) {
     if (rekernel_netlink) {
         netlink_kernel_release(rekernel_netlink);
     }
     if (rekernel_dir) {
         proc_remove(rekernel_dir);
     }
+
+    tracepoint_probe_unregister(kvar(__tracepoint_binder_transaction), rekernel_binder_transaction, NULL);
 
     unhook_func(binder_proc_transaction);
     unhook_func(do_send_sig_info);
