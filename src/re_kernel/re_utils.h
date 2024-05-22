@@ -35,6 +35,8 @@ typedef uint32_t inst_mask_t;
 #define INST_LDRH 0x79400000u
 #define INST_LDRSH 0x79800000u
 #define INST_LDRSH_64_ 0x79800000u
+#define INST_MOV_Rm_4_WZR 0x2A0403E0u
+#define INST_STR_Rn_SP_Rt_4 0xB90003E4u
 #define INST_STR_32_x0 0xB9000000u
 #define INST_CBZ 0x34000000
 #define INST_CBNZ 0x35000000
@@ -57,6 +59,8 @@ typedef uint32_t inst_mask_t;
 #define MASK_LDRH 0xFFC00000u
 #define MASK_LDRSH 0xFF800000u
 #define MASK_LDRSH_64_ 0xFFC00000u
+#define MASK_MOV_Rm_4_WZR 0x7FFFFFE0u
+#define MASK_STR_Rn_SP_Rt_4 0xBFC003E4u
 #define MASK_STR_32_x0 0xFFC003E0u
 #define MASK_CBZ 0x7F000000u
 #define MASK_CBNZ 0x7F000000u
@@ -118,123 +122,123 @@ typedef uint32_t inst_mask_t;
 
 extern bool kfunc_def(freezing_slow_path)(struct task_struct* p);
 static inline bool freezing_slow_path(struct task_struct* p) {
-  kfunc_call(freezing_slow_path, p);
-  kfunc_not_found();
-  return false;
+    kfunc_call(freezing_slow_path, p);
+    kfunc_not_found();
+    return false;
 }
 
 extern struct sk_buff* kfunc_def(__alloc_skb)(unsigned int size, gfp_t gfp_mask, int flags, int node);
 static inline struct sk_buff* alloc_skb(unsigned int size, gfp_t priority) {
-  kfunc_call(__alloc_skb, size, priority, 0, NUMA_NO_NODE);
-  kfunc_not_found();
-  return NULL;
+    kfunc_call(__alloc_skb, size, priority, 0, NUMA_NO_NODE);
+    kfunc_not_found();
+    return NULL;
 }
 
 static inline int nlmsg_msg_size(int payload) {
-  return NLMSG_HDRLEN + payload;
+    return NLMSG_HDRLEN + payload;
 }
 
 static inline int nlmsg_total_size(int payload) {
-  return NLMSG_ALIGN(nlmsg_msg_size(payload));
+    return NLMSG_ALIGN(nlmsg_msg_size(payload));
 }
 
 static inline void* nlmsg_data(const struct nlmsghdr* nlh) {
-  return (unsigned char*)nlh + NLMSG_HDRLEN;
+    return (unsigned char*)nlh + NLMSG_HDRLEN;
 }
 
 static inline struct sk_buff* nlmsg_new(size_t payload, gfp_t flags) {
-  return alloc_skb(nlmsg_total_size(payload), flags);
+    return alloc_skb(nlmsg_total_size(payload), flags);
 }
 
 extern struct nlmsghdr* kfunc_def(__nlmsg_put)(struct sk_buff* skb, u32 portid, u32 seq, int type, int len, int flags);
 static inline struct nlmsghdr* nlmsg_put(struct sk_buff* skb, u32 portid, u32 seq, int type, int payload, int flags) {
-  kfunc_call(__nlmsg_put, skb, portid, seq, type, payload, flags);
-  kfunc_not_found();
-  return NULL;
+    kfunc_call(__nlmsg_put, skb, portid, seq, type, payload, flags);
+    kfunc_not_found();
+    return NULL;
 }
 
 extern void kfunc_def(kfree_skb)(struct sk_buff* skb);
 static inline void nlmsg_free(struct sk_buff* skb) {
-  kfunc_call_void(kfree_skb, skb);
+    kfunc_call_void(kfree_skb, skb);
 }
 
 extern int kfunc_def(netlink_unicast)(struct sock* ssk, struct sk_buff* skb, u32 portid, int nonblock);
 static inline int netlink_unicast(struct sock* ssk, struct sk_buff* skb, u32 portid, int nonblock) {
-  kfunc_call(netlink_unicast, ssk, skb, portid, nonblock);
-  kfunc_not_found();
-  return -ESRCH;
+    kfunc_call(netlink_unicast, ssk, skb, portid, nonblock);
+    kfunc_not_found();
+    return -ESRCH;
 }
 
 extern struct sock* kfunc_def(__netlink_kernel_create)(struct net* net, int unit, struct module* module, struct netlink_kernel_cfg* cfg);
 static inline struct sock* netlink_kernel_create(struct net* net, int unit, struct netlink_kernel_cfg* cfg) {
-  kfunc_call(__netlink_kernel_create, net, unit, THIS_MODULE, cfg);
-  kfunc_not_found();
-  return NULL;
+    kfunc_call(__netlink_kernel_create, net, unit, THIS_MODULE, cfg);
+    kfunc_not_found();
+    return NULL;
 }
 
 extern void kfunc_def(netlink_kernel_release)(struct sock* sk);
 static inline void netlink_kernel_release(struct sock* sk) {
-  kfunc_call_void(netlink_kernel_release, sk);
+    kfunc_call_void(netlink_kernel_release, sk);
 }
 
 extern struct proc_dir_entry* kfunc_def(proc_mkdir)(const char* name, struct proc_dir_entry* parent);
 static inline struct proc_dir_entry* proc_mkdir(const char* name, struct proc_dir_entry* parent) {
-  kfunc_call(proc_mkdir, name, parent);
-  kfunc_not_found();
-  return NULL;
+    kfunc_call(proc_mkdir, name, parent);
+    kfunc_not_found();
+    return NULL;
 }
 
 extern struct proc_dir_entry* kfunc_def(proc_create_data)(const char* name, umode_t mode, struct proc_dir_entry* parent, const struct file_operations* proc_fops, void* data);
 static inline struct proc_dir_entry* proc_create(const char* name, umode_t mode, struct proc_dir_entry* parent, const struct file_operations* proc_fops) {
-  kfunc_call(proc_create_data, name, mode, parent, proc_fops, NULL);
-  kfunc_not_found();
-  return NULL;
+    kfunc_call(proc_create_data, name, mode, parent, proc_fops, NULL);
+    kfunc_not_found();
+    return NULL;
 }
 
 extern void kfunc_def(proc_remove)(struct proc_dir_entry* de);
 static inline void proc_remove(struct proc_dir_entry* de) {
-  kfunc_call_void(proc_remove, de);
+    kfunc_call_void(proc_remove, de);
 }
 
 extern void kfunc_def(seq_printf)(struct seq_file* m, const char* f, ...);
 static inline void seq_printf(struct seq_file* m, const char* f, ...) {
-  va_list args;
-  va_start(args, f);
-  kfunc(seq_printf)(m, f, args);
-  va_end(args);
+    va_list args;
+    va_start(args, f);
+    kfunc(seq_printf)(m, f, args);
+    va_end(args);
 }
 
 extern int kfunc_def(single_open)(struct file* file, int (*show)(struct seq_file*, void*), void* data);
 static inline int single_open(struct file* file, int (*show)(struct seq_file*, void*), void* data) {
-  kfunc_call(single_open, file, show, data);
-  kfunc_not_found();
-  return -ESRCH;
+    kfunc_call(single_open, file, show, data);
+    kfunc_not_found();
+    return -ESRCH;
 }
 
 extern int kfunc_def(get_cmdline)(struct task_struct* task, char* buffer, int buflen);
 static inline int get_cmdline(struct task_struct* task, char* buffer, int buflen) {
-  kfunc_call(get_cmdline, task, buffer, buflen);
-  kfunc_not_found();
-  return -ESRCH;
+    kfunc_call(get_cmdline, task, buffer, buflen);
+    kfunc_not_found();
+    return -ESRCH;
 }
 
 extern int kfunc_def(tracepoint_probe_register)(struct tracepoint* tp, void* probe, void* data);
 static inline int tracepoint_probe_register(struct tracepoint* tp, void* probe, void* data) {
-  kfunc_call(tracepoint_probe_register, tp, probe, data);
-  kfunc_not_found();
-  return -ESRCH;
+    kfunc_call(tracepoint_probe_register, tp, probe, data);
+    kfunc_not_found();
+    return -ESRCH;
 }
 
 extern int kfunc_def(tracepoint_probe_unregister)(struct tracepoint* tp, void* probe, void* data);
 static inline int tracepoint_probe_unregister(struct tracepoint* tp, void* probe, void* data) {
-  kfunc_call(tracepoint_probe_unregister, tp, probe, data);
-  kfunc_not_found();
-  return -ESRCH;
+    kfunc_call(tracepoint_probe_unregister, tp, probe, data);
+    kfunc_not_found();
+    return -ESRCH;
 }
 
 extern void kfunc_def(kfree)(const void* objp);
 static inline void kfree(const void* objp) {
-  kfunc_call_void(kfree, objp);
+    kfunc_call_void(kfree, objp);
 }
 
 #endif /* __RE_UTILS_H */
