@@ -2,10 +2,17 @@
 #define __RE_KERNEL_H
 
 #include <ktypes.h>
-#include <linux/include/linux/export.h>
+
+#define THIS_MODULE ((struct module *)0)
 
 #define ALIGN_MASK(x, mask) (((x) + (mask)) & ~(mask))
 #define ALIGN(x, a) ALIGN_MASK(x, (typeof(x))(a)-1)
+
+#define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))
+
+// linux/sched/jobctl.h
+#define JOBCTL_TRAP_FREEZE_BIT 23
+#define JOBCTL_TRAP_FREEZE (1UL << JOBCTL_TRAP_FREEZE_BIT)
 
 // android/binder.c
 struct binder_alloc;
@@ -266,11 +273,6 @@ struct file_operations {
 // linux/schde.h
 #define PF_FROZEN 0x00010000
 
-struct task_struct {
-    unsigned int __state;
-    // unknow
-};
-
 // uapi/asm/signal.h
 #define SIGQUIT 3
 #define SIGABRT 6
@@ -282,17 +284,149 @@ struct siginfo;
 // linux/socket.h
 #define MSG_DONTWAIT 0x40
 
-// include/linux/cgroup-defs.h
-enum {
-    CGRP_NOTIFY_ON_RELEASE,
-    CGRP_CPUSET_CLONE_CHILDREN,
-    CGRP_FREEZE,
-    CGRP_FROZEN,
-};
-struct cgroup;
-struct css_set;
-
 // linux/tracepoint-defs.h
 struct tracepoint;
+
+// net/tcp_states.h
+enum {
+    TCP_ESTABLISHED = 1,
+    TCP_SYN_SENT,
+    TCP_SYN_RECV,
+    TCP_FIN_WAIT1,
+    TCP_FIN_WAIT2,
+    TCP_TIME_WAIT,
+    TCP_CLOSE,
+    TCP_CLOSE_WAIT,
+    TCP_LAST_ACK,
+    TCP_LISTEN,
+    TCP_CLOSING,
+    TCP_NEW_SYN_RECV,
+    TCP_MAX_STATES
+};
+
+enum {
+    TCPF_ESTABLISHED = (1 << TCP_ESTABLISHED),
+    TCPF_SYN_SENT = (1 << TCP_SYN_SENT),
+    TCPF_SYN_RECV = (1 << TCP_SYN_RECV),
+    TCPF_FIN_WAIT1 = (1 << TCP_FIN_WAIT1),
+    TCPF_FIN_WAIT2 = (1 << TCP_FIN_WAIT2),
+    TCPF_TIME_WAIT = (1 << TCP_TIME_WAIT),
+    TCPF_CLOSE = (1 << TCP_CLOSE),
+    TCPF_CLOSE_WAIT = (1 << TCP_CLOSE_WAIT),
+    TCPF_LAST_ACK = (1 << TCP_LAST_ACK),
+    TCPF_LISTEN = (1 << TCP_LISTEN),
+    TCPF_CLOSING = (1 << TCP_CLOSING),
+    TCPF_NEW_SYN_RECV = (1 << TCP_NEW_SYN_RECV),
+};
+
+// net/sock.h
+typedef __u32 __bitwise __portpair;
+typedef __u64 __bitwise __addrpair;
+
+struct sock_common {
+    union {
+        __addrpair skc_addrpair;
+        struct {
+            __be32 skc_daddr;
+            __be32 skc_rcv_saddr;
+        };
+    };
+    union {
+        unsigned int skc_hash;
+        __u16 skc_u16hashes[2];
+    };
+    union {
+        __portpair skc_portpair;
+        struct {
+            __be16 skc_dport;
+            __u16 skc_num;
+        };
+    };
+    unsigned short skc_family;
+    volatile unsigned char skc_state;
+    unsigned char skc_reuse : 4;
+    unsigned char skc_reuseport : 1;
+    unsigned char skc_ipv6only : 1;
+    unsigned char skc_net_refcnt : 1;
+    int skc_bound_dev_if;
+    union {
+        struct hlist_node skc_bind_node;
+        struct hlist_node skc_portaddr_node;
+    };
+    struct proto* skc_prot;
+    // unknow
+};
+
+struct sock {
+    struct sock_common __sk_common;
+#define sk_node __sk_common.skc_node
+#define sk_nulls_node __sk_common.skc_nulls_node
+#define sk_refcnt __sk_common.skc_refcnt
+#define sk_tx_queue_mapping __sk_common.skc_tx_queue_mapping
+#ifdef CONFIG_SOCK_RX_QUEUE_MAPPING
+#define sk_rx_queue_mapping __sk_common.skc_rx_queue_mapping
+#endif
+
+#define sk_dontcopy_begin __sk_common.skc_dontcopy_begin
+#define sk_dontcopy_end __sk_common.skc_dontcopy_end
+#define sk_hash __sk_common.skc_hash
+#define sk_portpair __sk_common.skc_portpair
+#define sk_num __sk_common.skc_num
+#define sk_dport __sk_common.skc_dport
+#define sk_addrpair __sk_common.skc_addrpair
+#define sk_daddr __sk_common.skc_daddr
+#define sk_rcv_saddr __sk_common.skc_rcv_saddr
+#define sk_family __sk_common.skc_family
+#define sk_state __sk_common.skc_state
+#define sk_reuse __sk_common.skc_reuse
+#define sk_reuseport __sk_common.skc_reuseport
+#define sk_ipv6only __sk_common.skc_ipv6only
+#define sk_net_refcnt __sk_common.skc_net_refcnt
+#define sk_bound_dev_if __sk_common.skc_bound_dev_if
+#define sk_bind_node __sk_common.skc_bind_node
+#define sk_prot __sk_common.skc_prot
+#define sk_net __sk_common.skc_net
+#define sk_v6_daddr __sk_common.skc_v6_daddr
+#define sk_v6_rcv_saddr __sk_common.skc_v6_rcv_saddr
+#define sk_cookie __sk_common.skc_cookie
+#define sk_incoming_cpu __sk_common.skc_incoming_cpu
+#define sk_flags __sk_common.skc_flags
+#define sk_rxhash __sk_common.skc_rxhash
+  // unknow
+};
+
+// linux/skbuff.h
+typedef s64 ktime_t;
+struct sk_buff {
+    union {
+        struct {
+            struct sk_buff* next;
+            struct sk_buff* prev;
+            union {
+                struct net_device* dev;
+                unsigned long dev_scratch;
+            };
+        };
+        struct rb_node rbnode;
+        struct list_head list;
+    };
+    union {
+        struct sock* sk;
+        int ip_defrag_offset;
+    };
+    union {
+        ktime_t tstamp;
+        u64 skb_mstamp_ns;
+    };
+    char cb[48] __aligned(8);
+    union {
+        struct {
+            unsigned long _skb_refdst;
+            void (*destructor)(struct sk_buff* skb);
+        };
+        struct list_head tcp_tsorted_anchor;
+    };
+    // unknow
+};
 
 #endif /* __RE_KERNEL_H */

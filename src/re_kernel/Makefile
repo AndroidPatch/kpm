@@ -1,4 +1,4 @@
-RK_VERSION := 1.4.0.4
+RK_VERSION := 6.0.3
 
 ifndef KP_DIR
     KP_DIR = ../..
@@ -33,24 +33,31 @@ INCLUDE_DIRS := . include patch/include linux/include linux/arch/arm64/include l
 
 INCLUDE_FLAGS := $(foreach dir,$(INCLUDE_DIRS),-I$(KP_DIR)/kernel/$(dir))
 
-objs := re_kernel.o
+objs := re_kernel.c
 
-all: re_kernel_$(RK_VERSION).kpm
+all: base network
 
-debug: CFLAGS += -DDEBUG
+base: re_kernel_$(RK_VERSION).kpm
+
+network: CFLAGS += -DCONFIG_NETWORK
+network: RK_VER := _n
+network: re_kernel_$(RK_VERSION)_network.kpm
+
+debug: CFLAGS += -DCONFIG_DEBUG
 debug: RK_VER := _d
 debug: re_kernel_$(RK_VERSION)_debug.kpm
 
 re_kernel_$(RK_VERSION).kpm: ${objs}
-	${CC} $(CFLAGS) $(INCLUDE_FLAGS) -r -o $@ $^
+	${CC} $(CFLAGS) $(INCLUDE_FLAGS) $^ -r -o $@
+	${STRIP} -g --strip-unneeded $@
+
+re_kernel_$(RK_VERSION)_network.kpm: ${objs}
+	${CC} $(CFLAGS) $(INCLUDE_FLAGS) $^ -r -o $@
 	${STRIP} -g --strip-unneeded $@
 
 re_kernel_$(RK_VERSION)_debug.kpm: ${objs}
-	${CC} $(CFLAGS) $(INCLUDE_FLAGS) -r -o $@ $^
+	${CC} $(CFLAGS) $(INCLUDE_FLAGS) $^ -r -o $@
 	${STRIP} -g --strip-unneeded $@
-
-%.o: %.c
-	${CC} $(CFLAGS) $(INCLUDE_FLAGS) -c -o $@ $<
 
 .PHONY: clean
 clean:
