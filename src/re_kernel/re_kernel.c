@@ -83,8 +83,6 @@ loff_t kfunc_def(seq_lseek)(struct file* file, loff_t offset, int whence);
 void kfunc_def(seq_printf)(struct seq_file* m, const char* f, ...);
 int kfunc_def(single_open)(struct file* file, int (*show)(struct seq_file*, void*), void* data);
 int kfunc_def(single_release)(struct inode* inode, struct file* file);
-// netfilter
-kuid_t kfunc_def(sock_i_uid)(struct sock* sk);
 // hook binder_proc_transaction
 static int (*binder_proc_transaction)(struct binder_transaction* t, struct binder_proc* proc, struct binder_thread* thread);
 // free the outdated transaction and buffer
@@ -98,6 +96,8 @@ static struct binder_stats kvar_def(binder_stats);
 static int (*do_send_sig_info)(int sig, struct siginfo* info, struct task_struct* p, enum pid_type type);
 
 #ifdef CONFIG_NETWORK
+// netfilter
+kuid_t kfunc_def(sock_i_uid)(struct sock* sk);
 // hook tcp_rcv
 static int (*tcp_v4_rcv)(struct sk_buff* skb);
 static int (*tcp_v6_rcv)(struct sk_buff* skb);
@@ -111,14 +111,15 @@ int kfunc_def(tracepoint_probe_register)(struct tracepoint* tp, void* probe, voi
 int kfunc_def(tracepoint_probe_unregister)(struct tracepoint* tp, void* probe, void* data);
 // trace_binder_transaction
 struct tracepoint kvar_def(__tracepoint_binder_transaction);
-#ifdef CONFIG_DEBUG
+#ifdef CONFIG_DEBUG_CMDLINE
 int kfunc_def(get_cmdline)(struct task_struct* task, char* buffer, int buflen);
-#endif /* CONFIG_DEBUG */
+#endif /* CONFIG_DEBUG_CMDLINE */
 
 // 最好初始化一个大于 0xffffffff 的值, 否则编译器优化后, 全局变量可能出错
-static uint64_t task_struct_flags_offset = UZERO, task_struct_jobctl_offset = UZERO, task_struct_pid_offset = UZERO, task_struct_group_leader_offset = UZERO,
-binder_proc_alloc_offset = UZERO, binder_proc_context_offset = UZERO, binder_proc_inner_lock_offset = UZERO, binder_proc_outer_lock_offset = UZERO,
+static uint64_t task_struct_jobctl_offset = UZERO, task_struct_pid_offset = UZERO, task_struct_group_leader_offset = UZERO,
+binder_proc_alloc_offset = UZERO, binder_proc_context_offset = UZERO, binder_proc_inner_lock_offset = UZERO, binder_proc_outer_lock_offset = UZERO, binder_proc_is_frozen = UZERO,
 binder_alloc_pid_offset = UZERO, binder_alloc_buffer_size_offset = UZERO, binder_alloc_free_async_space_offset = UZERO, binder_alloc_vma_offset = UZERO,
+// 实际上会被编译器优化为 bool
 binder_transaction_buffer_release_ver5 = UZERO, binder_transaction_buffer_release_ver4 = UZERO;
 
 static struct sock* rekernel_netlink;
@@ -155,19 +156,23 @@ static inline void binder_inner_proc_unlock(struct binder_proc* proc) {
     spin_unlock(inner_lock);
 }
 
+// binder_is_frozen
+static inline bool binder_is_frozen(struct binder_proc* proc) {
+    bool is_frozen = false;
+    if (binder_proc_is_frozen != UZERO) {
+        is_frozen = *(bool*)((uintptr_t)proc + binder_proc_is_frozen);
+    }
+    return is_frozen;
+}
+
 // cgroupv2_freeze
 static inline bool jobctl_frozen(struct task_struct* task) {
     unsigned long jobctl = *(unsigned long*)((uintptr_t)task + task_struct_jobctl_offset);
     return ((jobctl & JOBCTL_TRAP_FREEZE) != 0);
 }
-// cgroupv1_freeze
-static inline bool frozen(struct task_struct* task) {
-    unsigned int flags = *(unsigned int*)((uintptr_t)task + task_struct_flags_offset);
-    return (flags & PF_FROZEN);
-}
 // 判断线程是否进入 frozen 状态
 static inline bool frozen_task_group(struct task_struct* task) {
-    return (jobctl_frozen(task) || frozen(task) || cgroup_freezing(task));
+    return (jobctl_frozen(task) || cgroup_freezing(task));
 }
 
 // 创建 netlink 服务
@@ -286,8 +291,12 @@ static void rekernel_report(int reporttype, int type, pid_t src_pid, struct task
         break;
     default:
         return;
-}
+    }
 #ifdef CONFIG_DEBUG
+    printk("re_kernel: %s\n", binder_kmsg);
+    printk("re_kernel: src_comm=%s,dst_comm=%s\n", get_task_comm(src), get_task_comm(dst));
+#endif /* CONFIG_DEBUG */
+#ifdef CONFIG_DEBUG_CMDLINE
     char src_cmdline[PATH_MAX], dst_cmdline[PATH_MAX];
     memset(&src_cmdline, 0, PATH_MAX);
     memset(&dst_cmdline, 0, PATH_MAX);
@@ -296,9 +305,8 @@ static void rekernel_report(int reporttype, int type, pid_t src_pid, struct task
     src_cmdline[res] = '\0';
     res = get_cmdline(dst, dst_cmdline, PATH_MAX - 1);
     dst_cmdline[res] = '\0';
-    printk("re_kernel: %s\n", binder_kmsg);
-    printk("re_kernel: src_cmdline=%s,src_comm=%s,dst_cmdline=%s,dst_comm=%s\n", src_cmdline, get_task_comm(src), dst_cmdline, get_task_comm(dst));
-#endif /* CONFIG_DEBUG */
+    printk("re_kernel: src_cmdline=%s,dst_cmdline=%s\n", src_cmdline, dst_cmdline);
+#endif /* CONFIG_DEBUG_CMDLINE */
     send_netlink_message(binder_kmsg, strlen(binder_kmsg));
 }
 
@@ -331,6 +339,9 @@ static void binder_overflow_handler(pid_t src_pid, struct task_struct* src, pid_
 
 static void rekernel_binder_transaction(void* data, bool reply, struct binder_transaction* t, struct binder_node* target_node) {
     if (!t->to_proc)
+        return;
+      // binder 冻结时不再传递消息
+    if (binder_is_frozen(t->to_proc))
         return;
 
     if (reply) {
@@ -399,7 +410,11 @@ static inline void binder_stats_deleted(enum binder_stat_types type) {
 static void binder_proc_transaction_before(hook_fargs3_t* args, void* udata) {
     struct binder_transaction* t = (struct binder_transaction*)args->arg0;
     struct binder_proc* proc = (struct binder_proc*)args->arg1;
-    // 兼容不支持 trace 的内核
+    // binder 冻结时不再清理过时消息
+    if (binder_is_frozen(proc))
+        return;
+
+      // 兼容不支持 trace 的内核
     if (trace == UZERO) {
         rekernel_binder_transaction(NULL, false, t, NULL);
     }
@@ -480,27 +495,46 @@ static long calculate_offsets() {
             break;
         } else if ((binder_transaction_buffer_release_src[i] & MASK_STR_Rn_SP_Rt_4) == INST_STR_Rn_SP_Rt_4) {
             binder_transaction_buffer_release_ver5 = IZERO;
-        } else if ((binder_transaction_buffer_release_src[i] & MASK_MOV_Rm_4_WZR) == INST_MOV_Rm_4_WZR) {
+        } else if ((binder_transaction_buffer_release_src[i] & MASK_MOV_Rm_4_Rn_WZR) == INST_MOV_Rm_4_Rn_WZR) {
             binder_transaction_buffer_release_ver5 = IZERO;
         } else if ((binder_transaction_buffer_release_src[i] & MASK_STR_Rn_SP_Rt_3) == INST_STR_Rn_SP_Rt_3) {
             binder_transaction_buffer_release_ver4 = IZERO;
-        } else if ((binder_transaction_buffer_release_src[i] & MASK_MOV_Rm_3_WZR) == INST_MOV_Rm_3_WZR) {
+        } else if ((binder_transaction_buffer_release_src[i] & MASK_MOV_Rm_3_Rn_WZR) == INST_MOV_Rm_3_Rn_WZR) {
             binder_transaction_buffer_release_ver4 = IZERO;
         }
     }
-    // 获取 task_struct->jobctl
-    void (*do_signal_stop)(struct task_struct* t);
-    lookup_name(do_signal_stop);
-
-    uint32_t* do_signal_stop_src = (uint32_t*)do_signal_stop;
-    for (u32 i = 0; i < 0x20; i++) {
+    // 获取 binder_proc->is_frozen, 没有就是不支持
+    uint32_t* binder_proc_transaction_src = (uint32_t*)binder_proc_transaction;
+    for (u32 i = 0; i < 0x100; i++) {
 #ifdef CONFIG_DEBUG
-        printk("re_kernel: do_signal_stop %x %llx\n", i, do_signal_stop_src[i]);
+        printk("re_kernel: binder_proc_transaction %x %llx\n", i, binder_proc_transaction_src[i]);
 #endif /* CONFIG_DEBUG */
-        if (do_signal_stop_src[i] == ARM64_RET) {
+        if (binder_proc_transaction_src[i] == ARM64_RET) {
             break;
-        } else if ((do_signal_stop_src[i] & MASK_MRS_SP_EL0) == INST_MRS_SP_EL0 && (do_signal_stop_src[i + 1] & MASK_LDR_64_) == INST_LDR_64_) {
-            uint64_t imm12 = bits32(do_signal_stop_src[i + 1], 21, 10);
+        } else if ((binder_proc_transaction_src[i] & MASK_MOVZ_imm16_0x7212) == INST_MOVZ_imm16_0x7212) {
+            for (u32 j = 0; j < 0x5; j++) {
+                if ((binder_proc_transaction_src[i - j] & MASK_LDRB) == INST_LDRB) {
+                    uint64_t imm12 = bits32(binder_proc_transaction_src[i - j], 21, 10);
+                    binder_proc_is_frozen = sign64_extend((imm12), 16u);
+                    break;
+                }
+            }
+            break;
+        }
+    }
+    // 获取 task_struct->jobctl
+    void (*task_clear_jobctl_trapping)(struct task_struct* t);
+    lookup_name(task_clear_jobctl_trapping);
+
+    uint32_t* task_clear_jobctl_trapping_src = (uint32_t*)task_clear_jobctl_trapping;
+    for (u32 i = 0; i < 0x10; i++) {
+#ifdef CONFIG_DEBUG
+        printk("re_kernel: task_clear_jobctl_trapping %x %llx\n", i, task_clear_jobctl_trapping_src[i]);
+#endif /* CONFIG_DEBUG */
+        if (task_clear_jobctl_trapping_src[i] == ARM64_RET) {
+            break;
+        } else if ((task_clear_jobctl_trapping_src[i] & MASK_LDR_64_Rn_X0) == INST_LDR_64_Rn_X0) {
+            uint64_t imm12 = bits32(task_clear_jobctl_trapping_src[i], 21, 10);
             task_struct_jobctl_offset = sign64_extend((imm12 << 0b11u), 16u);
             break;
         }
@@ -522,7 +556,7 @@ static long calculate_offsets() {
             break;
         } else if (binder_transaction_src[i] == 0xAA0003F6u) { // mov x22, x0
             mov_x22_x0 = true;
-        } else if ((!mov_x22_x0 && (binder_transaction_src[i] & MASK_LDR_64_X0) == INST_LDR_64_X0)
+        } else if (((binder_transaction_src[i] & MASK_LDR_64_Rn_X0) == INST_LDR_64_Rn_X0 && (binder_transaction_src[i] & MASK_LDR_64_Rn_X0_Rt_X0) != INST_LDR_64_Rn_X0_Rt_X0)
             || (mov_x22_x0 && (binder_transaction_src[i] & MASK_LDR_64_X22) == INST_LDR_64_X22)) {
             uint64_t imm12 = bits32(binder_transaction_src[i], 21, 10);
             binder_proc_context_offset = sign64_extend((imm12 << 0b11u), 16u);
@@ -542,11 +576,13 @@ static long calculate_offsets() {
     }
 
     uint32_t* binder_free_proc_src = (uint32_t*)binder_free_proc;
-    for (u32 i = 0; i < 0xA0; i++) {
+    for (u32 i = 0x10; i < 0x100; i++) {
 #ifdef CONFIG_DEBUG
         printk("re_kernel: binder_free_proc %x %llx\n", i, binder_free_proc_src[i]);
 #endif /* CONFIG_DEBUG */
-        if ((binder_free_proc_src[i] & MASK_ADD_64_Rn_X19_Rd_X0) == INST_ADD_64_Rn_X19_Rd_X0 && (binder_free_proc_src[i + 1] & MASK_BL) == INST_BL) {
+        if (binder_free_proc_src[i] == ARM64_MOV_x29_SP) {
+            break;
+        } else if ((binder_free_proc_src[i] & MASK_ADD_64_Rn_X19_Rd_X0) == INST_ADD_64_Rn_X19_Rd_X0 && (binder_free_proc_src[i + 1] & MASK_BL) == INST_BL) {
             uint32_t sh = bit(binder_free_proc_src[i], 22);
             uint64_t imm12 = imm12 = bits32(binder_free_proc_src[i], 21, 10);
             if (sh) {
@@ -589,36 +625,13 @@ static long calculate_offsets() {
     if (binder_alloc_pid_offset == UZERO || task_struct_pid_offset == UZERO || task_struct_group_leader_offset == UZERO) {
         return -11;
     }
-    // 获取 task_struct->flags
-    bool (*freezing_slow_path)(struct task_struct* p);
-    lookup_name(freezing_slow_path);
-
-    uint32_t* freezing_slow_path_src = (uint32_t*)freezing_slow_path;
-    for (u32 i = 0; i < 0x20; i++) {
-#ifdef CONFIG_DEBUG
-        printk("re_kernel: freezing_slow_path %x %llx\n", i, freezing_slow_path_src[i]);
-#endif /* CONFIG_DEBUG */
-        if (freezing_slow_path_src[i] == ARM64_RET) {
-            break;
-        } else if ((freezing_slow_path_src[i] & MASK_LDR_32_X0) == INST_LDR_32_X0) {
-            uint64_t imm12 = bits32(freezing_slow_path_src[i], 21, 10);
-            task_struct_flags_offset = sign64_extend((imm12 << 0b10u), 16u);
-            break;
-        } else if ((freezing_slow_path_src[i] & MASK_LDR_64_X0) == INST_LDR_64_X0) {
-            uint64_t imm12 = bits32(freezing_slow_path_src[i], 21, 10);
-            task_struct_flags_offset = sign64_extend((imm12 << 0b11u), 16u);
-            break;
-        }
-    }
-    if (task_struct_flags_offset == UZERO) {
-        return -11;
-    }
 
     return 0;
 }
 
 static long inline_hook_init(const char* args, const char* event, void* __user reserved) {
     lookup_name(cgroup_freezing);
+
     kfunc_lookup_name(__alloc_skb);
     kfunc_lookup_name(__nlmsg_put);
     kfunc_lookup_name(kfree_skb);
@@ -638,8 +651,6 @@ static long inline_hook_init(const char* args, const char* event, void* __user r
     kfunc_lookup_name(single_open);
     kfunc_lookup_name(single_release);
 
-    kfunc_lookup_name(sock_i_uid);
-
     kfunc_lookup_name(tracepoint_probe_register);
     kfunc_lookup_name(tracepoint_probe_unregister);
 
@@ -658,12 +669,14 @@ static long inline_hook_init(const char* args, const char* event, void* __user r
     lookup_name(do_send_sig_info);
 
 #ifdef CONFIG_NETWORK
+    kfunc_lookup_name(sock_i_uid);
+
     lookup_name(tcp_v4_rcv);
     lookup_name(tcp_v6_rcv);
 #endif /* CONFIG_NETWORK */
-#ifdef CONFIG_DEBUG
+#ifdef CONFIG_DEBUG_CMDLINE
     kfunc_lookup_name(get_cmdline);
-#endif /* CONFIG_DEBUG */
+#endif /* CONFIG_DEBUG_CMDLINE */
 
     int rc = 0;
     rc = calculate_offsets();
@@ -688,25 +701,32 @@ static long inline_hook_init(const char* args, const char* event, void* __user r
 
 static long inline_hook_control0(const char* ctl_args, char* __user out_msg, int outlen) {
     printk("\
-re_kernel: task_struct_flags_offset=0x%llx\n\
 re_kernel: task_struct_jobctl_offset=0x%llx\n\
 re_kernel: task_struct_pid_offset=0x%llx\n\
 re_kernel: task_struct_group_leader_offset=0x%llx\n",
-task_struct_flags_offset,
 task_struct_jobctl_offset,
 task_struct_pid_offset,
 task_struct_group_leader_offset);
     printk("\
-re_kernel: binder_proc_alloc_offset=0x%llx\n\
 re_kernel: binder_alloc_pid_offset=0x%llx\n\
 re_kernel: binder_alloc_buffer_size_offset=0x%llx\n\
 re_kernel: binder_alloc_free_async_space_offset=0x%llx\n\
 re_kernel: binder_alloc_vma_offset=0x%llx\n",
-binder_proc_alloc_offset,
 binder_alloc_pid_offset,
 binder_alloc_buffer_size_offset,
 binder_alloc_free_async_space_offset,
 binder_alloc_vma_offset);
+    printk("\
+re_kernel: binder_proc_alloc_offset=0x%llx\n\
+re_kernel: binder_proc_context_offset=0x%llx\n\
+re_kernel: binder_proc_inner_lock_offset=0x%llx\n\
+re_kernel: binder_proc_outer_lock_offset=0x%llx\n\
+re_kernel: binder_proc_is_frozen=0x%llx\n",
+binder_proc_alloc_offset,
+binder_proc_context_offset,
+binder_proc_inner_lock_offset,
+binder_proc_outer_lock_offset,
+binder_proc_is_frozen);
     printk("\
 re_kernel: binder_transaction_buffer_release_ver5=0x%llx\n\
 re_kernel: binder_transaction_buffer_release_ver4=0x%llx\n",

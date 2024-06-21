@@ -29,7 +29,8 @@ typedef uint32_t inst_mask_t;
 #define INST_LDR_32_ 0xB9400000u
 #define INST_LDR_32_X0 0xB9400000u
 #define INST_LDR_64_ 0xF9400000u
-#define INST_LDR_64_X0 0xF9400000u
+#define INST_LDR_64_Rn_X0 0xF9400000u
+#define INST_LDR_64_Rn_X0_Rt_X0 0xF9400000u
 #define INST_LDR_64_X22 0xF94002C0u
 #define INST_LDR_64_SP 0xF94003E0u
 #define INST_LDRB 0x39400000u
@@ -38,12 +39,15 @@ typedef uint32_t inst_mask_t;
 #define INST_LDRH_X0 0x79400000u
 #define INST_LDRSH 0x79800000u
 #define INST_LDRSH_64_ 0x79800000u
-#define INST_MOV_Rm_3_WZR 0x2A0303E0u
-#define INST_MOV_Rm_4_WZR 0x2A0403E0u
+#define INST_MOV_Rm_1_Rn_WZR 0x2A0103E0u
+#define INST_MOV_Rm_2_Rn_WZR 0x2A0203E0u
+#define INST_MOV_Rm_3_Rn_WZR 0x2A0303E0u
+#define INST_MOV_Rm_4_Rn_WZR 0x2A0403E0u
 #define INST_MRS_SP_EL0 0xD5384100u
 #define INST_STR_Rn_SP_Rt_3 0xB90003E3u
 #define INST_STR_Rn_SP_Rt_4 0xB90003E4u
 #define INST_STR_32_x0 0xB9000000u
+#define INST_STR_Rt_WZR 0xB900001Fu
 #define INST_CBZ 0x34000000
 #define INST_CBNZ 0x35000000
 #define INST_TBZ 0x36000000u
@@ -59,7 +63,8 @@ typedef uint32_t inst_mask_t;
 #define MASK_LDR_32_ 0xFFC00000u
 #define MASK_LDR_32_X0 0xFFC003E0u
 #define MASK_LDR_64_ 0xFFC00000u
-#define MASK_LDR_64_X0 0xFFC003E0u
+#define MASK_LDR_64_Rn_X0 0xFFC003E0u
+#define MASK_LDR_64_Rn_X0_Rt_X0 0xFFC003FFu
 #define MASK_LDR_64_X22 0xFFC003E0u
 #define MASK_LDR_64_SP 0xFFC003E0u
 #define MASK_LDRB 0xFFC00000u
@@ -68,19 +73,26 @@ typedef uint32_t inst_mask_t;
 #define MASK_LDRH_X0 0xFFC003E0u
 #define MASK_LDRSH 0xFF800000u
 #define MASK_LDRSH_64_ 0xFFC00000u
-#define MASK_MOV_Rm_3_WZR 0x7FFFFFE0u
-#define MASK_MOV_Rm_4_WZR 0x7FFFFFE0u
+#define MASK_MOV_Rm_1_Rn_WZR 0x7FFFFFE0u
+#define MASK_MOV_Rm_2_Rn_WZR 0x7FFFFFE0u
+#define MASK_MOV_Rm_3_Rn_WZR 0x7FFFFFE0u
+#define MASK_MOV_Rm_4_Rn_WZR 0x7FFFFFE0u
 #define MASK_MRS_SP_EL0 0xFFFFFFE0u
 #define MASK_STR_Rn_SP_Rt_3 0xBFC003E4u
 #define MASK_STR_Rn_SP_Rt_4 0xBFC003E4u
 #define MASK_STR_32_x0 0xFFC003E0u
+#define MASK_STR_Rt_WZR 0xFFC0001Fu
 #define MASK_CBZ 0x7F000000u
 #define MASK_CBNZ 0x7F000000u
 #define MASK_TBZ 0x7F000000u
 #define MASK_TBNZ 0x7F000000u
 #define MASK_TBNZ_5 0xFFF80000u
 
-#define ARM64_RET 0xD65F03C0
+#define INST_MOVZ_imm16_0x7212 0x528E4240u
+#define MASK_MOVZ_imm16_0x7212 0x7F9FFFE0u
+
+#define ARM64_MOV_x29_SP 0x910003FDu
+#define ARM64_RET 0xD65F03C0u
 
 #define lookup_name(func)                                  \
   func = 0;                                                \
@@ -128,13 +140,6 @@ typedef uint32_t inst_mask_t;
   //   kuid_t ___val = *(kuid_t *)((uintptr_t)cred + cred_offset.uid_offset);                   \
   //   ___val;                                                                                  \
   // })
-
-extern bool kfunc_def(freezing_slow_path)(struct task_struct* p);
-static inline bool freezing_slow_path(struct task_struct* p) {
-    kfunc_call(freezing_slow_path, p);
-    kfunc_not_found();
-    return false;
-}
 
 extern struct sk_buff* kfunc_def(__alloc_skb)(unsigned int size, gfp_t gfp_mask, int flags, int node);
 static inline struct sk_buff* alloc_skb(unsigned int size, gfp_t priority) {
