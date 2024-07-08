@@ -1,4 +1,4 @@
-RK_VERSION := 6.0.8
+MYKPM_VERSION := 6.0.8
 
 ifndef KP_DIR
     KP_DIR = ../..
@@ -27,7 +27,7 @@ CC ?= gcc
 LD ?= ld
 STRIP ?= strip
 
-CFLAGS = -Wall -O3 -fno-PIC -fno-asynchronous-unwind-tables -fno-stack-protector -fno-common -DRK_VERSION=\"$(RK_VERSION)$(RK_VER)\"
+CFLAGS = -Wall -O3 -fno-PIC -fno-asynchronous-unwind-tables -fno-stack-protector -fno-common -DMYKPM_VERSION=\"$(MYKPM_VERSION)$(MYKPM_VER)\"
 
 INCLUDE_DIRS := . include patch/include linux/include linux/arch/arm64/include linux/tools/arch/arm64/include kpm/include
 
@@ -37,25 +37,25 @@ objs := re_kernel.c
 
 all: base network
 
-base: re_kernel_$(RK_VERSION).kpm
+base: re_kernel_$(MYKPM_VERSION).kpm
 
 network: CFLAGS += -DCONFIG_NETWORK
-network: RK_VER := _n
-network: re_kernel_$(RK_VERSION)_network.kpm
+network: MYKPM_VER := _n
+network: re_kernel_$(MYKPM_VERSION)_network.kpm
 
 debug: CFLAGS += -DCONFIG_DEBUG
-debug: RK_VER := _d
-debug: re_kernel_$(RK_VERSION)_debug.kpm
+debug: MYKPM_VER := _d
+debug: re_kernel_$(MYKPM_VERSION)_debug.kpm
 
-re_kernel_$(RK_VERSION).kpm: ${objs}
+re_kernel_$(MYKPM_VERSION).kpm: ${objs}
 	${CC} $(CFLAGS) $(INCLUDE_FLAGS) $^ -r -o $@
 	${STRIP} -g --strip-unneeded $@
 
-re_kernel_$(RK_VERSION)_network.kpm: ${objs}
+re_kernel_$(MYKPM_VERSION)_network.kpm: ${objs}
 	${CC} $(CFLAGS) $(INCLUDE_FLAGS) $^ -r -o $@
 	${STRIP} -g --strip-unneeded $@
 
-re_kernel_$(RK_VERSION)_debug.kpm: ${objs}
+re_kernel_$(MYKPM_VERSION)_debug.kpm: ${objs}
 	${CC} $(CFLAGS) $(INCLUDE_FLAGS) $^ -r -o $@
 	${STRIP} -g --strip-unneeded $@
 
