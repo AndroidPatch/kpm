@@ -47,6 +47,7 @@ struct binder_work {
     enum binder_work_type {
         BINDER_WORK_TRANSACTION = 1,
         BINDER_WORK_TRANSACTION_COMPLETE,
+        BINDER_WORK_TRANSACTION_ONEWAY_SPAM_SUSPECT, // 6.1
         BINDER_WORK_RETURN_ERROR,
         BINDER_WORK_NODE,
         BINDER_WORK_DEAD_BINDER,
@@ -111,16 +112,19 @@ struct binder_buffer {
     struct list_head entry;
     struct rb_node rb_node;
     unsigned free : 1;
+    unsigned clear_on_free : 1; // 6.1
     unsigned allow_user_free : 1;
     unsigned async_transaction : 1;
-    unsigned debug_id : 29;
+    unsigned oneway_spam_suspect : 1; // 6.1
+    // unsigned debug_id : 29;
+    unsigned debug_id : 27; // 6.1
     struct binder_transaction* transaction;
     struct binder_node* target_node;
     size_t data_size;
     size_t offsets_size;
     size_t extra_buffers_size;
     void __user* user_data;
-    // unknow
+    int pid;
 };
 
 struct binder_priority {
@@ -131,24 +135,22 @@ struct binder_transaction {
     int debug_id;
     struct binder_work work;
     struct binder_thread* from;
-    struct binder_transaction* from_parent;
-    struct binder_proc* to_proc;
-    struct binder_thread* to_thread;
-    struct binder_transaction* to_parent;
-    unsigned need_reply : 1;
-    struct binder_buffer* buffer;
-    unsigned int code;
-    unsigned int flags;
-    struct binder_priority priority;
-    struct binder_priority saved_priority;
-    bool set_priority_called;
     // unknow
+    // pid_t from_pid; // 6.1
+    // pid_t from_tid; // 6.1
+    // struct binder_transaction* from_parent;
+    // struct binder_proc* to_proc;
+    // struct binder_thread* to_thread;
+    // struct binder_transaction* to_parent;
+    // unsigned need_reply : 1;
+    // struct binder_buffer* buffer;
+    // unsigned int code;
+    // unsigned int flags;
+    // struct binder_priority priority;
+    // struct binder_priority saved_priority;
+    // bool set_priority_called;
 };
 
-struct binder_error {
-    struct binder_work work;
-    uint32_t cmd;
-};
 struct wait_queue_head {
     spinlock_t lock;
     struct list_head head;
@@ -165,28 +167,15 @@ enum binder_stat_types {
     BINDER_STAT_COUNT
 };
 struct binder_stats {
-    atomic_t br[(((29201u) >> 0) & ((1 << 8) - 1)) + 1];
-    atomic_t bc[(((1078485778) >> 0) & ((1 << 8) - 1)) + 1];
+    atomic_t br[18];
+    // atomic_t br[20]; // 6.1
+    atomic_t bc[19];
     atomic_t obj_created[BINDER_STAT_COUNT];
     atomic_t obj_deleted[BINDER_STAT_COUNT];
 };
+
 struct binder_thread {
     struct binder_proc* proc;
-    struct rb_node rb_node;
-    struct list_head waiting_thread_node;
-    int pid;
-    int looper;
-    bool looper_need_return;
-    struct binder_transaction* transaction_stack;
-    struct list_head todo;
-    bool process_todo;
-    struct binder_error return_error;
-    struct binder_error reply_error;
-    wait_queue_head_t wait;
-    struct binder_stats stats;
-    atomic_t tmp_ref;
-    bool is_dead;
-    struct task_struct* task;
     // unknow
 };
 
@@ -195,13 +184,7 @@ struct sk_buff;
 struct net;
 struct sock;
 struct netlink_kernel_cfg {
-    unsigned int groups;
-    unsigned int flags;
-    void (*input)(struct sk_buff* skb);
-    struct mutex* cb_mutex;
-    int (*bind)(struct net* net, int group);
-    void (*unbind)(struct net* net, int group);
-    bool (*compare)(struct net* net, struct sock* sk);
+    char unknow[0x30];
 };
 
 struct nlmsghdr {
@@ -238,36 +221,7 @@ struct pipe_inode_info;
 struct seq_file;
 struct open_flags;
 struct file_operations {
-    struct module* owner;
-    loff_t(*llseek)(struct file*, loff_t, int);
-    ssize_t(*read)(struct file*, char __user*, size_t, loff_t*);
-    ssize_t(*write)(struct file*, const char __user*, size_t, loff_t*);
-    ssize_t(*read_iter)(struct kiocb*, struct iov_iter*);
-    ssize_t(*write_iter)(struct kiocb*, struct iov_iter*);
-    int (*iterate)(struct file*, struct dir_context*);
-    int (*iterate_shared)(struct file*, struct dir_context*);
-    __poll_t(*poll)(struct file*, struct poll_table_struct*);
-    long (*unlocked_ioctl)(struct file*, unsigned int, unsigned long);
-    long (*compat_ioctl)(struct file*, unsigned int, unsigned long);
-    int (*mmap)(struct file*, struct vm_area_struct*);
-    unsigned long mmap_supported_flags;
-    int (*open)(struct inode*, struct file*);
-    int (*flush)(struct file*, fl_owner_t id);
-    int (*release)(struct inode*, struct file*);
-    int (*fsync)(struct file*, loff_t, loff_t, int datasync);
-    int (*fasync)(int, struct file*, int);
-    int (*lock)(struct file*, int, struct file_lock*);
-    ssize_t(*sendpage)(struct file*, struct page*, int, size_t, loff_t*, int);
-    unsigned long (*get_unmapped_area)(struct file*, unsigned long, unsigned long, unsigned long, unsigned long);
-    int (*check_flags)(int);
-    int (*flock)(struct file*, int, struct file_lock*);
-    ssize_t(*splice_write)(struct pipe_inode_info*, struct file*, loff_t*, size_t, unsigned int);
-    ssize_t(*splice_read)(struct file*, loff_t*, struct pipe_inode_info*, size_t, unsigned int);
-    int (*setlease)(struct file*, long, struct file_lock**, void**);
-    long (*fallocate)(struct file* file, int mode, loff_t offset,
-        loff_t len);
-    void (*show_fdinfo)(struct seq_file* m, struct file* f);
-    // unknow
+    char unknow[0x120];
 };
 
 // linux/schde.h

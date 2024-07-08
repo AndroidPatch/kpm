@@ -25,6 +25,7 @@ typedef uint32_t inst_mask_t;
 #define INST_ADD_64_Rd_X0_Rn_X19 0x91000260u
 #define INST_ADD_64_Rd_X0 0x91000000u
 #define INST_ADD_64_Rd_X1 0x91000001u
+#define INST_AND_64_imm_0XFFFFFFFFFFFFFFF8 0x927DF000u
 #define INST_BL 0x94000000
 #define INST_LDR_32_ 0xB9400000u
 #define INST_LDR_32_X0 0xB9400000u
@@ -59,6 +60,7 @@ typedef uint32_t inst_mask_t;
 #define MASK_ADD_64_Rd_X0_Rn_X19 0xFF8003FFu
 #define MASK_ADD_64_Rd_X0 0xFF80001Fu
 #define MASK_ADD_64_Rd_X1 0xFF80001Fu
+#define MASK_AND_64_imm_0XFFFFFFFFFFFFFFF8 0xFFFFFC00u
 #define MASK_BL 0xFC000000
 #define MASK_LDR_32_ 0xFFC00000u
 #define MASK_LDR_32_X0 0xFFC003E0u
@@ -78,8 +80,8 @@ typedef uint32_t inst_mask_t;
 #define MASK_MOV_Rm_3_Rn_WZR 0x7FFFFFE0u
 #define MASK_MOV_Rm_4_Rn_WZR 0x7FFFFFE0u
 #define MASK_MRS_SP_EL0 0xFFFFFFE0u
-#define MASK_STR_Rn_SP_Rt_3 0xBFC003E4u
-#define MASK_STR_Rn_SP_Rt_4 0xBFC003E4u
+#define MASK_STR_Rn_SP_Rt_3 0xBFC003FFu
+#define MASK_STR_Rn_SP_Rt_4 0xBFC003FFu
 #define MASK_STR_32_x0 0xFFC003E0u
 #define MASK_STR_Rt_WZR 0xFFC0001Fu
 #define MASK_CBZ 0x7F000000u
@@ -93,6 +95,8 @@ typedef uint32_t inst_mask_t;
 
 #define ARM64_MOV_x29_SP 0x910003FDu
 #define ARM64_RET 0xD65F03C0u
+
+#define logkm(fmt, ...) printk("re_kernel: " fmt, ##__VA_ARGS__)
 
 #define lookup_name(func)                                  \
   func = 0;                                                \
@@ -135,10 +139,10 @@ typedef uint32_t inst_mask_t;
   })
 
 #define task_uid(task) task_real_uid(task)
-  // ({                                                                                         \
-  //   struct cred *cred = *(struct cred **)((uintptr_t)task + task_struct_offset.cred_offset); \
-  //   kuid_t ___val = *(kuid_t *)((uintptr_t)cred + cred_offset.uid_offset);                   \
-  //   ___val;                                                                                  \
+  // ({
+  //   struct cred *cred = *(struct cred **)((uintptr_t)task + task_struct_offset.cred_offset);
+  //   kuid_t ___val = *(kuid_t *)((uintptr_t)cred + cred_offset.uid_offset);
+  //   ___val;
   // })
 
 extern struct sk_buff* kfunc_def(__alloc_skb)(unsigned int size, gfp_t gfp_mask, int flags, int node);
@@ -212,21 +216,6 @@ static inline struct proc_dir_entry* proc_create(const char* name, umode_t mode,
 extern void kfunc_def(proc_remove)(struct proc_dir_entry* de);
 static inline void proc_remove(struct proc_dir_entry* de) {
     kfunc_call_void(proc_remove, de);
-}
-
-extern void kfunc_def(seq_printf)(struct seq_file* m, const char* f, ...);
-static inline void seq_printf(struct seq_file* m, const char* f, ...) {
-    va_list args;
-    va_start(args, f);
-    kfunc(seq_printf)(m, f, args);
-    va_end(args);
-}
-
-extern int kfunc_def(single_open)(struct file* file, int (*show)(struct seq_file*, void*), void* data);
-static inline int single_open(struct file* file, int (*show)(struct seq_file*, void*), void* data) {
-    kfunc_call(single_open, file, show, data);
-    kfunc_not_found();
-    return -ESRCH;
 }
 
 extern kuid_t kfunc_def(sock_i_uid)(struct sock* sk);
