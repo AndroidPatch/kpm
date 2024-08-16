@@ -112,34 +112,37 @@ int kfunc_def(get_cmdline)(struct task_struct* task, char* buffer, int buflen);
 
 // 最好初始化一个大于 0xFFFFFFFF 的值, 否则编译器优化后, 全局变量可能出错
 static uint64_t task_struct_jobctl_offset = UZERO, task_struct_pid_offset = UZERO, task_struct_tgid_offset = UZERO, task_struct_group_leader_offset = UZERO,
-binder_transaction_to_proc_offset = UZERO, binder_transaction_buffer_offset = UZERO, binder_transaction_code_offset = UZERO, binder_transaction_flags_offset = UZERO,
+binder_transaction_from_offset = UZERO, binder_transaction_to_proc_offset = UZERO, binder_transaction_buffer_offset = UZERO,
+binder_transaction_code_offset = UZERO, binder_transaction_flags_offset = UZERO,
+binder_node_lock_offset = UZERO,
+binder_node_ptr_offset = UZERO, binder_node_cookie_offset = UZERO, binder_node_has_async_transaction_offset = UZERO, binder_node_async_todo_offset = UZERO,
 binder_proc_outstanding_txns_offset = UZERO, binder_proc_is_frozen_offset = UZERO,
 binder_proc_alloc_offset = UZERO, binder_proc_context_offset = UZERO, binder_proc_inner_lock_offset = UZERO, binder_proc_outer_lock_offset = UZERO,
 binder_alloc_pid_offset = UZERO, binder_alloc_buffer_size_offset = UZERO, binder_alloc_free_async_space_offset = UZERO, binder_alloc_vma_offset = UZERO,
 // 实际上会被编译器优化为 bool
 binder_transaction_buffer_release_ver6 = UZERO, binder_transaction_buffer_release_ver5 = UZERO, binder_transaction_buffer_release_ver4 = UZERO;
-#include "re_offsets.c"
 
-static struct sock* rekernel_netlink;
-static unsigned long rekernel_netlink_unit = UZERO, trace = UZERO;
-static struct proc_dir_entry* rekernel_dir, * rekernel_unit_entry;
+static unsigned long trace = UZERO;
+#include "re_offsets.c"
 
 // binder_node_lock
 static inline void binder_node_lock(struct binder_node* node) {
-    spin_lock(&node->lock);
+    spinlock_t* node_lock = binder_node_lock_ptr(node);
+    spin_lock(node_lock);
 }
 // binder_node_unlock
 static inline void binder_node_unlock(struct binder_node* node) {
-    spin_unlock(&node->lock);
+    spinlock_t* node_lock = binder_node_lock_ptr(node);
+    spin_unlock(node_lock);
 }
 // binder_inner_proc_lock
 static inline void binder_inner_proc_lock(struct binder_proc* proc) {
-    spinlock_t* inner_lock = (spinlock_t*)((uintptr_t)proc + binder_proc_inner_lock_offset);
+    spinlock_t* inner_lock = binder_proc_inner_lock(proc);
     spin_lock(inner_lock);
 }
 // binder_inner_proc_unlock
 static inline void binder_inner_proc_unlock(struct binder_proc* proc) {
-    spinlock_t* inner_lock = (spinlock_t*)((uintptr_t)proc + binder_proc_inner_lock_offset);
+    spinlock_t* inner_lock = binder_proc_inner_lock(proc);
     spin_unlock(inner_lock);
 }
 
@@ -163,6 +166,9 @@ static inline bool frozen_task_group(struct task_struct* task) {
 }
 
 // 创建 netlink 服务
+static struct sock* rekernel_netlink;
+static unsigned long rekernel_netlink_unit = UZERO;
+static struct proc_dir_entry* rekernel_dir, * rekernel_unit_entry;
 static const struct file_operations rekernel_unit_fops = {};
 
 static int start_rekernel_server(void) {
@@ -301,12 +307,13 @@ static void rekernel_binder_transaction(void* data, bool reply, struct binder_tr
     struct binder_proc* to_proc = binder_transaction_to_proc(t);
     if (!to_proc)
         return;
+    struct binder_thread* from = binder_transaction_from(t);
 
     if (reply) {
         binder_reply_handler(task_pid(current), current, to_proc->pid, to_proc->tsk, false);
-    } else if (t->from) {
-        if (t->from->proc) {
-            binder_trans_handler(t->from->proc->pid, t->from->proc->tsk, to_proc->pid, to_proc->tsk, false);
+    } else if (from) {
+        if (from->proc) {
+            binder_trans_handler(from->proc->pid, from->proc->tsk, to_proc->pid, to_proc->tsk, false);
         }
     } else { // oneway=1
       // binder_trans_handler(task_pid(current), current, to_proc->pid, to_proc->tsk, true);
@@ -325,11 +332,15 @@ static bool binder_can_update_transaction(struct binder_transaction* t1, struct 
     struct binder_buffer* t1_buffer = binder_transaction_buffer(t1);
     unsigned int t1_code = binder_transaction_code(t1);
     unsigned int t1_flags = binder_transaction_flags(t1);
+    binder_uintptr_t t1_ptr = binder_node_ptr(t1_buffer->target_node);
+    binder_uintptr_t t1_cookie = binder_node_cookie(t1_buffer->target_node);
 
     struct binder_proc* t2_to_proc = binder_transaction_to_proc(t2);
     struct binder_buffer* t2_buffer = binder_transaction_buffer(t2);
     unsigned int t2_code = binder_transaction_code(t2);
     unsigned int t2_flags = binder_transaction_flags(t2);
+    binder_uintptr_t t2_ptr = binder_node_ptr(t2_buffer->target_node);
+    binder_uintptr_t t2_cookie = binder_node_cookie(t2_buffer->target_node);
 
     if ((t1_flags & t2_flags & TF_ONE_WAY) != TF_ONE_WAY || !t1_to_proc || !t2_to_proc)
         return false;
@@ -337,28 +348,33 @@ static bool binder_can_update_transaction(struct binder_transaction* t1, struct 
         && t1_code == t2_code
         && t1_flags == t2_flags
         && (binder_proc_is_frozen_offset == UZERO ? true : t1_buffer->pid == t2_buffer->pid) // 4.19 以下无此数据
-        && t1_buffer->target_node->ptr == t2_buffer->target_node->ptr
-        && t1_buffer->target_node->cookie == t2_buffer->target_node->cookie)
+        && t1_ptr == t2_ptr
+        && t1_cookie == t2_cookie)
         return true;
     return false;
 }
 
 static struct binder_transaction* binder_find_outdated_transaction_ilocked(struct binder_transaction* t, struct list_head* target_list) {
     struct binder_work* w;
+    bool second = false;
 
     list_for_each_entry(w, target_list, entry) {
         if (w->type != BINDER_WORK_TRANSACTION)
             continue;
         struct binder_transaction* t_queued = container_of(w, struct binder_transaction, work);
-        if (binder_can_update_transaction(t_queued, t))
-            return t_queued;
+        if (binder_can_update_transaction(t_queued, t)) {
+            if (second)
+                return t_queued;
+            else
+                second = true;
+        }
     }
     return NULL;
 }
 
 static inline void outstanding_txns_dec(struct binder_proc* proc) {
     if (binder_proc_outstanding_txns_offset != UZERO) {
-        int* outstanding_txns = (int*)((uintptr_t)proc + binder_proc_outstanding_txns_offset);
+        int* outstanding_txns = binder_proc_outstanding_txns(proc);
         (*outstanding_txns)--;
     }
 }
@@ -388,7 +404,6 @@ static void binder_proc_transaction_before(hook_fargs3_t* args, void* udata) {
 
     struct binder_buffer* buffer = binder_transaction_buffer(t);
     struct binder_node* node = buffer->target_node;
-    args->local.data0 = NULL;
     // 兼容不支持 trace 的内核
     if (trace == UZERO) {
         rekernel_binder_transaction(NULL, false, t, NULL);
@@ -402,25 +417,22 @@ static void binder_proc_transaction_before(hook_fargs3_t* args, void* udata) {
         return;
 
     binder_node_lock(node);
-    if (!node->has_async_transaction) {
+    bool has_async_transaction = binder_node_has_async_transaction(node);
+    if (!has_async_transaction) {
         binder_node_unlock(node);
         return;
     }
     binder_inner_proc_lock(proc);
 
-    struct binder_transaction* t_outdated = binder_find_outdated_transaction_ilocked(t, &node->async_todo);
+    struct list_head* async_todo = binder_node_async_todo(node);
+    struct binder_transaction* t_outdated = binder_find_outdated_transaction_ilocked(t, async_todo);
     if (t_outdated) {
         list_del_init(&t_outdated->work.entry);
         outstanding_txns_dec(proc);
-        args->local.data0 = (uint64_t)t_outdated;
     }
 
     binder_inner_proc_unlock(proc);
     binder_node_unlock(node);
-}
-
-static void binder_proc_transaction_after(hook_fargs3_t* args, void* udata) {
-    struct binder_transaction* t_outdated = (struct binder_transaction*)args->local.data0;
 
     if (t_outdated) {
         struct binder_proc* proc = (struct binder_proc*)args->arg1;
@@ -444,7 +456,7 @@ static void do_send_sig_info_before(hook_fargs4_t* args, void* udata) {
     struct task_struct* dst = (struct task_struct*)args->arg2;
 
     if (sig == SIGKILL || sig == SIGTERM || sig == SIGABRT || sig == SIGQUIT) {
-        rekernel_report(SIGNAL, sig, task_tgid(current), current, task_tgid(dst), dst, NULL);
+        rekernel_report(SIGNAL, sig, task_tgid(current), current, task_tgid(dst), dst, false);
     }
 }
 
@@ -510,6 +522,20 @@ static long calculate_offsets() {
 #endif /* CONFIG_DEBUG */
         if (binder_proc_transaction_src[i] == ARM64_RET) {
             break;
+        } else if (binder_node_has_async_transaction_offset == UZERO && (binder_proc_transaction_src[i] & MASK_STRB) == INST_STRB) {
+            uint64_t imm12 = bits32(binder_proc_transaction_src[i], 21, 10);
+            binder_node_has_async_transaction_offset = sign64_extend((imm12), 16u);         // 0x6B
+            binder_node_ptr_offset = binder_node_has_async_transaction_offset - 0x13;       // 0x58
+            binder_node_cookie_offset = binder_node_has_async_transaction_offset - 0xB;     // 0x60
+            binder_node_async_todo_offset = binder_node_has_async_transaction_offset + 0x5; // 0x70
+            // 目前只有 harmony 内核需要特殊设置
+            if (binder_node_has_async_transaction_offset == 0x6B) {
+                binder_node_lock_offset = 0x4;
+                binder_transaction_from_offset = 0x20;
+            } else if (binder_node_has_async_transaction_offset == 0x7B) {
+                binder_node_lock_offset = 0x8;
+                binder_transaction_from_offset = 0x28;
+            }
         } else if (binder_transaction_buffer_offset == UZERO && (binder_proc_transaction_src[i] & MASK_LDR_64_Rn_X0) == INST_LDR_64_Rn_X0) {
             uint64_t imm12 = bits32(binder_proc_transaction_src[i], 21, 10);
             binder_transaction_buffer_offset = sign64_extend((imm12 << 0b11u), 16u);     // 0x50
@@ -529,14 +555,20 @@ static long calculate_offsets() {
         }
     }
 #ifdef CONFIG_DEBUG
+    logkm("binder_transaction_from_offset=0x%llx\n", binder_transaction_from_offset);
     logkm("binder_transaction_to_proc_offset=0x%llx\n", binder_transaction_to_proc_offset);
     logkm("binder_transaction_buffer_offset=0x%llx\n", binder_transaction_buffer_offset);
     logkm("binder_transaction_code_offset=0x%llx\n", binder_transaction_code_offset);
     logkm("binder_transaction_flags_offset=0x%llx\n", binder_transaction_flags_offset);
+    logkm("binder_node_lock_offset=0x%llx\n", binder_node_lock_offset);
+    logkm("binder_node_ptr_offset=0x%llx\n", binder_node_ptr_offset);
+    logkm("binder_node_cookie_offset=0x%llx\n", binder_node_cookie_offset);
+    logkm("binder_node_has_async_transaction_offset=0x%llx\n", binder_node_has_async_transaction_offset);
+    logkm("binder_node_async_todo_offset=0x%llx\n", binder_node_async_todo_offset);
     logkm("binder_proc_outstanding_txns_offset=0x%llx\n", binder_proc_outstanding_txns_offset);
     logkm("binder_proc_is_frozen_offset=0x%llx\n", binder_proc_is_frozen_offset);
 #endif /* CONFIG_DEBUG */
-    if (binder_transaction_buffer_offset == UZERO) {
+    if (binder_node_lock_offset == UZERO || binder_node_has_async_transaction_offset == UZERO || binder_transaction_buffer_offset == UZERO) {
         return -11;
     }
     // 获取 task_struct->jobctl
@@ -609,7 +641,7 @@ static long calculate_offsets() {
             break;
         } else if ((binder_free_proc_src[i] & MASK_ADD_64_Rd_X0_Rn_X19) == INST_ADD_64_Rd_X0_Rn_X19 && (binder_free_proc_src[i + 1] & MASK_BL) == INST_BL) {
             uint32_t sh = bit(binder_free_proc_src[i], 22);
-            uint64_t imm12 = imm12 = bits32(binder_free_proc_src[i], 21, 10);
+            uint64_t imm12 = bits32(binder_free_proc_src[i], 21, 10);
             if (sh) {
                 binder_proc_alloc_offset = sign64_extend((imm12 << 12u), 16u); // 0x1A8
             } else {
@@ -721,7 +753,7 @@ static long inline_hook_init(const char* args, const char* event, void* __user r
         trace = IZERO;
     }
 
-    hook_func(binder_proc_transaction, 3, binder_proc_transaction_before, binder_proc_transaction_after, NULL);
+    hook_func(binder_proc_transaction, 3, binder_proc_transaction_before, NULL, NULL);
     hook_func(do_send_sig_info, 4, do_send_sig_info_before, NULL, NULL);
 
 #ifdef CONFIG_NETWORK
