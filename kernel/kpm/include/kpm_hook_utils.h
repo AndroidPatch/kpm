@@ -19,7 +19,7 @@
     hook_original_def(func);                               \
     hook_backup_def(func);                                 \
     hook_replace_func_include(func, retType, __VA_ARGS__); \
-    static hook_err_t hook_##func##_err = HOOK_NOT_HOOK;
+    static hook_err_t hook_##func##_err = HOOK_DUPLICATED;
 
 #define find_and_hook_func_with(func, original, replace, backup, tag)                                \
     static inline bool hook_##func()                                                                 \

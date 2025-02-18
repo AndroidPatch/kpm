@@ -67,7 +67,7 @@ static inline bool uninstallHook()
 {
     if (hook_success(policydb_write)) {
         unhook((void *)hook_original(policydb_write));
-        hook_err(policydb_write) = HOOK_NOT_HOOK;
+        hook_err(policydb_write) = HOOK_DUPLICATED;
         pr_info("PDBF: disbaled !\n");
     } else {
         pr_info("PDBF: Always disabled !\n");

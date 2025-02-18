@@ -74,7 +74,7 @@ static inline bool uninstallHook()
 {
     if (hook_success(do_filp_open)) {
         unhook((void *)hook_original(do_filp_open));
-        hook_err(do_filp_open) = HOOK_NOT_HOOK;
+        hook_err(do_filp_open) = HOOK_DUPLICATED;
         pr_info("HFR: disbaled !\n");
     } else {
         pr_info("HFR: Always disabled !\n");
